@@ -33,7 +33,7 @@ For a desktop launcher on Windows, run `npm run backend:launcher`, then copy
 to start the server; keep its window open and press Ctrl+C to stop it. The project
 folder and installed Node runtime must stay in place. See `backend/README.md`.
 
-Keep provider keys only in the ignored `backend/.env`. Start the PC server with `npm run backend`, then apply `adb reverse tcp:4319 tcp:4319` for a USB-connected phone. In **Topics → Backend connection**, enable automatic refill, use `http://127.0.0.1:4319`, enter `BACKEND_DEVICE_TOKEN` from the private environment file, and save. The Samsung is already paired; reapply USB reverse after reconnecting it. Android stores pairing settings in SecureStore and never receives the Gemini key. See `backend/README.md` for setup, limits and recovery.
+Keep provider keys only in the ignored `backend/.env`. For Wi-Fi, set `BACKEND_HOST` in that file to the laptop's Wi-Fi IPv4 address, start the PC server, and connect the phone to the same network. In **Topics → Backend connection**, enable automatic refill, use `http://192.168.1.3:4319` (or update it if the laptop's Wi-Fi address changes), enter `BACKEND_DEVICE_TOKEN` from the private environment file, and save. Android stores pairing settings in SecureStore and never receives the Gemini key. See `backend/README.md` for setup, limits and recovery.
 
 ## Optional local AI
 

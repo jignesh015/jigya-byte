@@ -41,7 +41,7 @@ that and leaves the existing server running.
 This is a launcher for this PC: Node.js 24.13+ and the project folder are still
 required. It embeds the project and Node paths, never keys. Source/configuration
 changes take effect on the next launch; rebuild the EXE if either path moves.
-USB phone connections still need `adb reverse tcp:4319 tcp:4319` after reconnecting.
+For Wi-Fi phone connections, set `BACKEND_HOST` in `backend/.env` to the PC's Wi-Fi IPv4 address and connect the phone to the same network. USB forwarding with `adb reverse tcp:4319 tcp:4319` remains available as an alternative.
 
 From the project root:
 
@@ -78,6 +78,8 @@ Consult current official [Gemini pricing](https://ai.google.dev/gemini-api/docs/
 | `POST /v1/jobs/{id}/retry` | Explicit retry of a failed job after fixing its cause. Rechecks demand and budgets; refuses running jobs; uncertain jobs require an explicit Retry and confirmed non-billed Gemini mode. |
 | `POST /v1/history/batches` | `{ "protocolVersion": 1, "deviceId": "installation-id", "events": [...] }`. Idempotent batches; response acknowledges event IDs. |
 
+Every app-to-server HTTP exchange writes one structured JSON line to the backend's console (`event: "http_exchange"`), including timestamp, method, route, status, duration, byte counts and safe summaries. Sync and history entries include a short one-way device hash and item counts; job/delivery routes include a short resource hash so retries and acknowledgments can be followed. Responses include delivery/refill state and job counts. This also records rejected and unmatched requests. Query strings are omitted. Pairing tokens, headers, raw request bodies, card content, inventory/history IDs and full device IDs are never logged. `completed: false` means the client disconnected before the response finished.
+
 Example empty-library snapshot:
 
 ```json
@@ -108,9 +110,9 @@ SQLite restart recovery restores deliveries, cache and queued jobs. A job interr
 
 ## Phone connection
 
-Loopback is default. USB: `adb reverse tcp:4319 tcp:4319`, then open Topics → Backend connection on Android. Enable automatic refill, use `http://127.0.0.1:4319`, and enter the local `BACKEND_DEVICE_TOKEN` as the pairing token. Save interests/settings. The token is saved in platform secure storage; never enter a Gemini/OpenAI key on the phone. The UI shows authoritative unread count, provider/model, refill/shortage state and Retry. Resume/read/favorite/import events coalesce into a single sync; pending jobs poll while the app is foregrounded. Cached reading never waits for the PC. Retry explicitly retries failed jobs without clearing provider budgets; uncertain calls can be explicitly retried only in confirmed free Gemini mode; their original budget reservations remain charged against local limits. Paid-mode uncertain calls remain blocked for reconciliation.
+For Wi-Fi, set `BACKEND_HOST` in `backend/.env` to the PC's Wi-Fi IPv4 address, restart the backend, and connect the phone to the same network. Open Topics → Backend connection on Android, enable automatic refill, use `http://<PC-Wi-Fi-IPv4>:4319`, and enter `BACKEND_DEVICE_TOKEN` as the pairing token. USB remains available with `adb reverse tcp:4319 tcp:4319` and `http://127.0.0.1:4319`. The token is saved in platform secure storage; never enter a Gemini/OpenAI key on the phone. The UI shows authoritative unread count, provider/model, refill/shortage state and Retry. Resume/read/favorite/import events coalesce into a single sync; pending jobs poll while the app is foregrounded. Cached reading never waits for the PC. Retry explicitly retries failed jobs without clearing provider budgets; uncertain calls can be explicitly retried only in confirmed free Gemini mode; their original budget reservations remain charged against local limits. Paid-mode uncertain calls remain blocked for reconciliation.
 
-The connected Samsung was configured over USB during this implementation. USB forwarding must be restored after reconnecting or restarting ADB. LAN requires explicit `BACKEND_HOST` configuration and a private-network firewall rule. Review transport security before wider hosting.
+For LAN, bind the backend to the PC's Wi-Fi IPv4 address. If the connection still fails, check whether Windows Firewall blocks inbound TCP port 4319 or the Wi-Fi network isolates clients. Review transport security before wider hosting.
 
 ## Verification and troubleshooting
 

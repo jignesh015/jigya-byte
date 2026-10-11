@@ -1,12 +1,21 @@
 import * as SecureStore from 'expo-secure-store';
 import { validateServiceUrl } from './cardGenerator';
 export type BackendSettings = { enabled: boolean; serviceUrl: string; pairingToken: string };
-export const defaultBackendSettings: BackendSettings = { enabled: false, serviceUrl: 'http://127.0.0.1:4319', pairingToken: '' };
+const wifiBackendUrl = 'http://192.168.1.3:4319';
+export const defaultBackendSettings: BackendSettings = { enabled: false, serviceUrl: wifiBackendUrl, pairingToken: '' };
 const storageKey = 'jigyabyte.backend.connection.v1';
 export async function getBackendSettings(): Promise<BackendSettings> {
   const stored = await SecureStore.getItemAsync(storageKey);
   if (!stored) return defaultBackendSettings;
-  try { const value = JSON.parse(stored); return { enabled: value.enabled === true, serviceUrl: validateServiceUrl(value.serviceUrl), pairingToken: typeof value.pairingToken === 'string' ? value.pairingToken : '' }; }
+  try {
+    const value = JSON.parse(stored);
+    const serviceUrl = validateServiceUrl(value.serviceUrl);
+    const settings = { enabled: value.enabled === true,
+      serviceUrl: serviceUrl === 'http://127.0.0.1:4319' ? wifiBackendUrl : serviceUrl,
+      pairingToken: typeof value.pairingToken === 'string' ? value.pairingToken : '' };
+    if (settings.serviceUrl !== serviceUrl) await SecureStore.setItemAsync(storageKey, JSON.stringify(settings));
+    return settings;
+  }
   catch { return defaultBackendSettings; }
 }
 export async function saveBackendSettings(settings: BackendSettings): Promise<BackendSettings> {

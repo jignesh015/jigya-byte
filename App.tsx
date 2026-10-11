@@ -522,12 +522,13 @@ function InterestsScreen({
   );
 }
 
-function AnalyticsScreen({ snapshot, selected, onSelect, backendStatus, onRetry }: {
+function AnalyticsScreen({ snapshot, selected, onSelect, backendStatus, onRetry, retryLabel }: {
   snapshot: AnalyticsSnapshot | null;
   selected: AnalyticsMetric;
   onSelect: (metric: AnalyticsMetric) => void;
   backendStatus: BackendStatus | null;
   onRetry: () => void;
+  retryLabel: string;
 }) {
   const maxValue = useMemo(() => Math.max(1, ...topics.map((topic) => snapshot?.byTopic[selected][topic.id] ?? 0)), [selected, snapshot]);
 
@@ -537,9 +538,18 @@ function AnalyticsScreen({ snapshot, selected, onSelect, backendStatus, onRetry 
       <Text style={styles.analyticsSubtitle}>A snapshot of the ideas you’ve explored across all time.</Text>
 
       {backendStatus ? <View style={styles.backendBanner} accessibilityLiveRegion="polite">
-        <View style={{ flex: 1 }}><Text style={styles.providerNoticeText}>{backendStatus.unread} unread · {backendStatus.provider ?? 'Backend'}{backendStatus.model ? ` / ${backendStatus.model}` : ''}</Text>
-          <Text style={styles.reviewHint}>{backendStatus.message}{backendStatus.unread < 50 ? ' Your offline supply is below 50.' : ''}</Text></View>
-        <ActionButton compact label="Retry" onPress={onRetry} />
+        <View style={{ flex: 1 }}>
+          <View style={styles.connectionRow}>
+            <View style={[styles.connectionDot, backendStatus.connection === 'connected' ? styles.connectionDotConnected : backendStatus.connection === 'offline' ? styles.connectionDotOffline : backendStatus.connection === 'checking' ? styles.connectionDotChecking : styles.connectionDotDisabled]} />
+            <Text style={styles.providerNoticeText}>
+              {backendStatus.connection === 'connected' ? 'Connected to backend' : backendStatus.connection === 'checking' ? 'Checking backend…' : backendStatus.connection === 'offline' ? 'Not connected to backend' : 'Backend not configured'}
+              {backendStatus.lastHandshakeAt ? ` · checked ${new Date(backendStatus.lastHandshakeAt).toLocaleTimeString()}` : ''}
+            </Text>
+          </View>
+          <Text style={styles.reviewHint}>{backendStatus.unread} unread · {backendStatus.provider ?? 'Backend'}{backendStatus.model ? ` / ${backendStatus.model}` : ''}</Text>
+          <Text style={styles.reviewHint}>{backendStatus.connection === 'offline' ? backendStatus.connectionMessage : backendStatus.message}{backendStatus.unread < 50 ? ' Your offline supply is below 50.' : ''}</Text>
+        </View>
+        <ActionButton compact label={retryLabel} onPress={onRetry} />
       </View> : null}
 
       <View style={styles.statRow}>
@@ -659,7 +669,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [backendSettings, setBackendSettings] = useState(defaultBackendSettings);
   const [refreshingFeed, setRefreshingFeed] = useState(false);
-  const [backendStatus, setBackendStatus] = useState<BackendStatus>({ state: 'disabled', message: 'Backend connection is optional.', unread: 0 });
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>({ state: 'disabled', message: 'Backend connection is optional.', unread: 0, connection: 'disabled' });
   const syncRef = useRef<BackendSync | null>(null);
   const activeFeedId = useRef<string | null>(null);
   const readerId = useRef<string | null>(null);
@@ -903,6 +913,7 @@ export default function App() {
   const refreshFeed = useCallback(async () => {
     if (refreshingFeed || discoveryBusy) return;
     setRefreshingFeed(true);
+    if (backendSettings.pairingToken.length >= 32) void syncRef.current?.handshake().catch(() => {});
     try {
       await refreshLocalData();
       if (backendSettings.enabled && syncRef.current) await syncRef.current.refresh();
@@ -953,7 +964,10 @@ export default function App() {
                   <FavoritesScreen cards={cards} onOpen={openDetails} onFavorite={handleFavorite} onFeed={() => setTab('feed')} />
                 </View>
                 <View style={[styles.mainPane, tab !== 'analytics' && styles.hiddenPane]}>
-                  <AnalyticsScreen snapshot={analytics} selected={metric} onSelect={setMetric} backendStatus={backendSettings.enabled ? backendStatus : null} onRetry={() => syncRef.current?.retry()} />
+                  <AnalyticsScreen snapshot={analytics} selected={metric} onSelect={setMetric}
+                    backendStatus={backendSettings.enabled || backendSettings.pairingToken.length >= 32 ? backendStatus : null}
+                    onRetry={() => backendSettings.enabled ? syncRef.current?.retry() : void syncRef.current?.handshake().catch(() => {})}
+                    retryLabel={backendSettings.enabled ? 'Retry' : 'Check'} />
                 </View>
               </View>
 
@@ -997,6 +1011,12 @@ export default function App() {
 
 const styles = StyleSheet.create({
   backendBanner: { padding: 16, marginTop: 20, flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 18, backgroundColor: colors.surface },
+  connectionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  connectionDot: { width: 8, height: 8, borderRadius: 4 },
+  connectionDotConnected: { backgroundColor: '#74d6a0' },
+  connectionDotOffline: { backgroundColor: '#ef8278' },
+  connectionDotChecking: { backgroundColor: '#e6bd67' },
+  connectionDotDisabled: { backgroundColor: colors.muted },
   safeArea: { flex: 1, backgroundColor: colors.background },
   screen: { flex: 1, backgroundColor: colors.background },
   loadingScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background, gap: 16 },
