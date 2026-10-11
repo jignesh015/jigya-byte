@@ -1,5 +1,13 @@
 # JigyaByte phone acceptance
 
+## Current Gemini-only card flow — 2026-10-11
+
+The old Wikipedia discovery and local Ollama generator have been removed. New cards are generated only by Gemini through the PC backend, with a curiosity-first prompt and an explicit unverified label. Backend schema 6 invalidates its previous card cache and drops cached source excerpts; app schema 7 removes the retired local-generator preference. The backend remains stopped at the user's request. No live Gemini call or phone acceptance was performed for this change.
+
+Use the checklist below after the user starts the backend and pairs the phone. Confirm cards read like memorable facts, surprising connections, reflective ideas or useful game/software development tips; confirm non-professional topics avoid heavy jargon and academic prose. Verify the UI says Gemini-generated and unverified. Test retrying a failed 3.8 request and the configured 3.6 fallback, then stop the backend and confirm saved cards remain readable offline.
+
+The dated records below describe earlier app versions and provider experiments. They are historical evidence only; their Wikipedia, local-model and source-grounded behavior is no longer part of the app.
+
 ## Exact provider error investigation — 2026-10-11
 
 Two one-request probes, with and without explicit low thinking, returned HTTP `503`, Google status `UNAVAILABLE`, and `This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.` This is exact current capacity-error evidence; older response bodies were discarded by the previous adapter. The latest prior phone job also recorded `provider_refused_or_incomplete`, but its historical finish reason is unknown.
@@ -49,11 +57,10 @@ Target phone: Samsung SM-S901E, Android 16, APK 1.0.0. Record text-size settings
 - [ ] Open the same card repeatedly. Seen and Expanded increase once each. Switch chart metrics: all ten categories remain readable, including zeros. Totals count primary topics without overlap.
 - [ ] Save one card; Favorites and its category increase by one. Remove it and confirm both decrease immediately. Repeat after force-stop/reopen.
 - [ ] Schedule Again, Got it and Easy on different cards; confirm their displayed due dates are roughly 10 minutes, 1 day and 7 days later. After Again is due, restart and look for a review lane (recent-card exclusions can postpone selection until the unseen pool is exhausted).
-- [ ] **KNOWN ISSUE — HTTP 403:** With network enabled, use Find a new card. Once repaired, read source attribution and license in details. Switch to airplane mode, force-stop/reopen and read the imported card locally.
-- [ ] Try discovery while offline. Confirm a useful error with all existing cards still available. Turn the PC service off and repeat startup.
+- [ ] With Gemini backend paired, create fresh cards in several topics. Check the requested fun-fact tone, plain language outside game/software development, and the Gemini-generated/unverified label. Stop the backend, switch to airplane mode, force-stop/reopen and read saved cards.
+- [ ] Try creating a card while the backend is offline. Confirm a useful status and that all existing cards remain available.
 - [ ] Inspect long titles/text at normal and enlarged Android text sizes. The feed previews truncate; More contains the full text. Confirm all controls remain reachable and details scroll. There are no image dependencies in the core feed.
-- [ ] Use TalkBack: More, favorite, back, metric tabs, topic choices, AI toggle and chart rows have clear labels/states. Check paging with Android reduced motion enabled; there are no custom transition animations.
-- [ ] Optional: run the local service with a real installed Ollama model, enable local AI, generate one card, and verify its unverified label and offline persistence. Disable/stop the service and confirm public discovery still works. A real-model test has not been automated.
+- [ ] Use TalkBack: More, favorite, back, metric tabs, topic choices, backend controls and chart rows have clear labels/states. Check paging with Android reduced motion enabled.
 
 For a clean zero-data chart test, deliberately clear storage first only if no data needs preserving. Skip onboarding and open Analytics; Expanded and Favorites should display guidance and ten zero categories. Seen can already be one because the first feed card was viewed.
 

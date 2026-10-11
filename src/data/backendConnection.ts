@@ -1,9 +1,19 @@
 import * as SecureStore from 'expo-secure-store';
-import { validateServiceUrl } from './cardGenerator';
 export type BackendSettings = { enabled: boolean; serviceUrl: string; pairingToken: string };
 const wifiBackendUrl = 'http://192.168.1.3:4319';
 export const defaultBackendSettings: BackendSettings = { enabled: false, serviceUrl: wifiBackendUrl, pairingToken: '' };
 const storageKey = 'jigyabyte.backend.connection.v1';
+export function validateServiceUrl(value: string): string {
+  const url = new URL(value.trim());
+  const privateHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1'
+    || /^10\.\d+\.\d+\.\d+$/.test(url.hostname) || /^192\.168\.\d+\.\d+$/.test(url.hostname)
+    || /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(url.hostname);
+  if (!privateHost || !['http:', 'https:'].includes(url.protocol) || url.username || url.password
+      || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('Use a local PC backend address, such as http://192.168.1.10:4319.');
+  }
+  return url.origin;
+}
 export async function getBackendSettings(): Promise<BackendSettings> {
   const stored = await SecureStore.getItemAsync(storageKey);
   if (!stored) return defaultBackendSettings;

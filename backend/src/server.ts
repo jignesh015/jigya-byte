@@ -8,7 +8,6 @@ import { array, Failure, history, object, snapshot, string } from './contracts/i
 import { Store } from './storage/store.ts';
 import { Worker } from './jobs/worker.ts';
 import { cloudGenerator } from './providers/cloud.ts';
-import { wikipediaRetriever } from './retrieval/wikipedia.ts';
 
 async function body(request: IncomingMessage, onBytes: (size: number) => void): Promise<unknown> {
   const chunks: Buffer[] = []; let size = 0;
@@ -82,7 +81,7 @@ function responseSummary(route: string, status: number, value: unknown): Record<
   return {};
 }
 export function createBackend(config: Config, store = new Store(config.database), worker?: Worker) {
-  const jobs = worker ?? new Worker(config, store, cloudGenerator(config), wikipediaRetriever(config, store));
+  const jobs = worker ?? new Worker(config, store, cloudGenerator(config));
   const server = createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
     response.setHeader('Cache-Control', 'no-store');
@@ -124,7 +123,6 @@ export function createBackend(config: Config, store = new Store(config.database)
           contentMode: config.mode, cacheCards: store.cards().length, usage: store.usage(),
           retryUncertainAllowed: uncertain.length ? uncertain.every(job => freeRetryRoute(job.provider_index) && (!job.diagnostics || JSON.parse(job.diagnostics).provider === 'gemini')) : freeRetryRoute(0),
           fallbackChain: routes.map(route => ({ provider: route.provider, model: route.model })),
-          openaiFallbackEnabled: config.openaiFallbackEnabled,
           limits: { requests: config.requestLimit, reservedTokens: config.tokenLimit, reservedCost: config.costLimit },
           inventory: { minimum: config.unreadMin, refillAt: config.refillAt, target: config.target, readNonFavoriteLimit: config.readLimit },
           jobs: store.jobs() }); return;

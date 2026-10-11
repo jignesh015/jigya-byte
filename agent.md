@@ -1,16 +1,20 @@
 # JigyaByte Agent Guide
 
-Current content policy (2026-10-11): ship no starter/sample cards. Schema version 5 removes the old `jigyabyte-sample` cards and associated local sample interactions/favorites/reviews; imported provider content is preserved. A clean installation starts empty and obtains real cards through explicit public import or a configured backend. Gemini preparation supplies up to ten distinct cards in one structured request, bounded by remaining demand, cache capacity and existing budgets. Favorites use a custom SVG heart, never a text glyph.
+Current card editorial and content policy (2026-10-11): all new cards come from the Gemini API through the server-only backend. Do not fetch or cite Wikipedia or another source, and do not use a local model or another provider. Cards should earn a “Wow, I didn't know that!” or “That makes me think” reaction: one memorable fact, surprising connection, vivid comparison, reflective question, or practical game/software development technique. Avoid textbook definitions, lecture-like summaries, academic framing, generic filler, and heavy jargon outside game development and software development. Use familiar language for every other subject. Keep the summary to one clear sentence and the detail to 2–4 short, conversational sentences. Prefer well-established claims Gemini can state confidently; never invent details or exaggerate for effect. Cards are Gemini-generated and unverified because the backend makes no live-reference requests; tell readers to check important claims independently.
+
+Current content reset (2026-10-11): app schema version 6 previously cleared the card library once. Backend database version 6 clears existing cached card bodies and deliveries and drops its cached-source table once; app schema version 7 removes the retired local-generator setting while preserving preferences and other local state. The backend preserves duplicate history and provider budget reservations. A clean installation starts empty. Gemini prepares up to ten distinct cards in one structured request, bounded by demand, cache capacity and existing budgets. Favorites use the custom SVG heart.
+
+Current backend operation: generation runs only when the user starts the backend on their PC and enables its authenticated app connection. Keep Gemini keys in ignored `backend/.env`; never place them in the app. The user's requested daily ledger reset and configured 15-request / 362,880-token caps are historical context; inspect the local database before claiming current usage. The user requested that the backend remain stopped so they can start it themselves.
 
 Current interaction policy: backend status and Retry belong on Analytics. Feed uses native pull to refresh at the top of the deck; imports append without moving the current card. Heart toggles use a short spring pulse and reader entry uses a 240ms slide/fade, both disabled when Android requests reduced motion.
 
-Current fallback policy (2026-10-11): explicitly approved free chain Gemini 3.8 Flash → Gemini 3.6 Flash, only for definitive generation overload/429 errors. All attempts share existing daily budgets; never reset usage to enable fallback. SQLite version 4 persists route selection and sanitized attempt diagnostics. No fallback on uncertain timeout, credentials, refusal or validation failures. OpenAI is wired as an optional second fallback with quickstart model `gpt-6-astra`, but the user explicitly chose to keep it disabled after clarification that ChatGPT Plus does not include API-key usage. Keep `OPENAI_FALLBACK_ENABLED=false` and paid calls blocked unless subsequently approved.
+Current fallback policy (2026-10-11): the configured Gemini chain is Gemini 3.8 Flash → Gemini 3.6 Flash. On a Gemini provider/model failure, the worker advances once to the configured Gemini 3.6 model after bounded backoff and reserves that attempt separately. If Gemini 3.6 times out, the job remains uncertain for explicit user retry. There is no other provider fallback. SQLite version 4 persists route selection and sanitized attempt diagnostics.
 
-Current local budget (2026-10-11): the user subsequently approved increasing the backend daily request cap from 12 to 15. The companion reserved-token cap is 362,880 (15 × the existing 16,000 input + 8,192 output bounds). Preserve all accumulated reservations; this changes limits without resetting usage. Google's independent quotas still apply. Paid calls and OpenAI fallback remain disabled.
+Current local budget (2026-10-11): configured request and reserved-token caps are 15 and 362,880 (15 × the existing 16,000 input + 8,192 output bounds). Google's independent quotas apply. Paid calls remain blocked.
 
-Timeout recovery: uncertain calls never retry automatically. Explicit Retry may replace an uncertain call only for confirmed free Gemini with paid calls disabled; preserve the original budget reservation and reserve each new attempt. Uncertain paid calls require reconciliation. The local Gemini request timeout is 60 seconds.
+Timeout recovery: a Gemini 3.8 model-call error advances once to the configured Gemini 3.6 fallback, as explicitly requested. Each attempt keeps its own reservation. If Gemini 3.6 times out, the job remains uncertain; an explicit Retry can start the chain again because paid calls remain disabled. The local Gemini request timeout is 60 seconds.
 
-Current provider diagnosis: captured HTTP 503 / UNAVAILABLE explicitly says the model is experiencing high demand. Backend version-3 jobs retain sanitized diagnostics. Local Gemini 3.8 uses low thinking; overload retries wait roughly 10/20 seconds plus jitter. The investigation exhausted the unchanged 12-request daily cap; do not claim live recovery or reset budgets to bypass it. See backend README for the single-request diagnostic command and exact evidence.
+Historical provider diagnosis: captured HTTP 503 / UNAVAILABLE explicitly said the model was experiencing high demand. Backend jobs retain sanitized diagnostics. Local Gemini 3.8 uses low thinking; provider retries wait roughly 10/20 seconds plus jitter. Google's independent quotas still apply. See backend README for the recorded diagnostic evidence.
 
 ## Product
 
@@ -23,10 +27,10 @@ The app name is **JigyaByte**. Preserve this spelling and capitalization in user
 - Build an Android app, not a PWA. The user chose Android to avoid PWA setup concerns such as HTTPS.
 - Keep core reading, navigation, saved cards, reviews, and analytics available from local storage. The app should remain useful when the PC service or internet is unavailable.
 - Keep the project free to operate. Never enable a paid API, create a billable resource, or incur a charge without explicit user approval. Provider free tiers and quotas can change; do not present them as guaranteed.
-- Support two content modes in the design: public/free information providers and AI-generated content. Make provider choice explicit. Do not put provider secrets in the Android client; if a key is needed, keep it in a local service or user-managed secure configuration.
-- Treat the PC-hosted service as optional. It may discover, generate, and cache content, but it must not be required to open the app or read locally stored cards.
-- The server in `backend/` supports explicitly configured Gemini and OpenAI adapters, durable cache/jobs/budgets and authenticated sync. New installations default to disabled generation; provider keys live only in its ignored `.env`. Android connection, Favorites, persistent queue and version-5 retention/history migration with all starter samples removed are implemented. The current local setup explicitly selects Gemini `gemini-3.8-flash`; the user confirmed a free-tier project with billing disabled. Paid calls remain blocked. Provider keys, retrieval, prompts, validation, caching and upstream API calls belong on the server. The existing `service/` remains an implemented local-Ollama prototype. See `backend-plan.md`, `backend/README.md`, and `docs/manual-test.md` for current validation and limits.
-- Preserve source title, source URL, attribution, license, provider ID, and retrieval time for externally sourced cards. Show useful attribution with the card or its details.
+- Generate all new content with Gemini through `backend/`; do not call Wikipedia, local models, OpenAI or another provider. The Gemini key and upstream requests remain server-side.
+- Treat the PC-hosted Gemini backend as optional for reading, not for generation. The app must open, preserve local state and read saved cards offline when the PC or internet is unavailable.
+- The backend owns Gemini prompts, validation, duplicate checks, budgets, cache, jobs and authenticated sync. New installs default to disabled generation until explicitly configured. See `backend/README.md` and `docs/manual-test.md` for current operation and acceptance status.
+- New cards have no external references and must be labeled Gemini-generated and unverified. Never make up attribution, citations, or URLs.
 
 ## Feed and topics
 
@@ -77,37 +81,36 @@ If a card has multiple topic tags, assign a primary topic for category reporting
 - Treat the Android device's local database as the source of truth for user preferences, feed interactions, favorites, review state, and analytics.
 - Store content and user interaction history separately so a card can be seen, expanded, favorited, and reviewed without duplicating its body text.
 - Use stable provider IDs and content hashes for idempotent imports and duplicate detection.
-- Keep provider discovery, normalization, and AI generation behind separate interfaces. Provider failures should not prevent reading cached content.
+- Keep Gemini prompts, generation, validation and backend transport behind the existing boundaries. Provider failures should not prevent reading cached content; do not reintroduce source retrieval or alternate model providers.
 - Prefer small, reviewable changes that preserve these product requirements. Do not add dependencies or choose a backend/platform architecture solely from this guide when the existing project or user provides a different direction.
 
 ## Locked implementation decisions (Phase 0)
 
 - **Android stack:** React Native with Expo SDK 57 and TypeScript. Expo Go is the initial manual review path; an installable Android binary is a later phase.
 - **Local persistence:** Expo SQLite with the built-in async API. Version schema changes with `PRAGMA user_version` migrations. Keep SQL and persistence behind a repository boundary; SQLite on the Android device is authoritative.
-- **PC service:** optional. It may support later content discovery, but launch, reading cached provider content, preferences, and interactions must work with no PC service and no internet.
-- **Initial public provider:** English Wikipedia via the Wikimedia REST API, introduced in Phase 5. It covers the preferred topic range and returns source pages for attribution. Treat rate limits as changeable: use a descriptive User-Agent where the platform permits, cache results, keep requests bounded, and honor `Retry-After` for 429/503 responses. Reused text needs a source-page link, license link, and a note that the app edited/adapted the text; check each page's applicable license. The app is personal-use only, but retain these fields in the data model.
+- **Content generation:** Gemini API through the PC backend only. There is no public-source discovery or local model path. A backend connection is needed to generate new cards, but never to read saved cards.
 - **Categories:** cards may have multiple topic tags; each card has one required primary topic for non-overlapping analytics. The primary topic is also the default display category.
 - **Initial review actions:** “Again” schedules 10 minutes later, “Got it” schedules 1 day later, and “Easy” schedules 7 days later. These deterministic intervals are an MVP starting point, not an adaptive spaced-repetition algorithm.
 - **Feed session:** full-screen vertical paging, with no session progress counter in the MVP.
 - **Feed composition:** keep the requested shuffled ten-slot 70/20/10 mix for Phase 4.
-- **Cost guard:** no paid APIs, billable resources, or AI provider calls are enabled. Public-source access is best-effort and never required for local reading.
+- **Cost guard:** paid API calls remain disabled. Confirm provider quota and cost mode before enabling any paid model configuration.
 
-Tradeoffs: Expo allows fast Android iteration and Expo Go review with the requested toolchain; SQLite keeps personal state local and available offline. Wikimedia offers broad topic coverage and reusable text, while attribution/share-alike obligations mean imported and adapted content must retain provenance and license metadata.
+Tradeoffs: Expo allows fast Android iteration and Expo Go review with the requested toolchain; SQLite keeps personal state local and available offline. Gemini supplies new cards only when the optional PC backend is available; saved cards remain readable offline.
 
 ## Phase 7 implementation decision
 
-- Optional AI uses a user-started Node PC service and an already installed local Ollama model. No cloud adapters, keys, billing, or automatic model downloads are implemented.
-- Public Wikipedia discovery remains the default. AI generation is separately opt-in in Topics/settings, labels every generated card, and stores it in the same offline library. Generated text is unverified and must not be presented as a factual source.
-- The PC service exposes `/health`, `/cards`, and `/generate`; only `/generate` invokes a model. It binds to loopback by default; phone access can use USB `adb reverse` or an explicitly configured LAN host. No PC service request is made at startup.
+- This phase description is historical. The current implementation uses the Gemini API through `backend/`; the old local Ollama and Wikipedia paths have been removed.
+- Gemini generation is the sole path for new content. Cards are stored in the same offline library and labeled unverified; do not present Gemini as an independent factual source.
+- The backend exposes authenticated sync and status endpoints plus `/health`; it calls only Gemini. It binds according to its local configuration; phone access can use USB `adb reverse` or a private LAN host. No model call is made unless the configured backend has a generation job.
 - Personal APK builds bundle the JavaScript for independent offline launch. Device installation and visual review are separate acceptance steps.
 
 ## Future decisions
 
-The current implementation uses the locked Expo, TypeScript, and Expo SQLite choices above. The optional local PC service and AI generator remain outside the core reading path. Do not add paid API calls without explicit approval. Later visual refinements and any review scheduling beyond the fixed MVP intervals can be decided after manual device review.
+The current implementation uses the locked Expo, TypeScript, and Expo SQLite choices above. Gemini generation remains outside the core reading path. Do not add another content provider or paid API call without explicit approval. Later visual refinements and any review scheduling beyond the fixed MVP intervals can be decided after manual device review.
 
 ## Accepted next scope (2026-10-10; documentation only)
 
-- The user marked manual testing passed for now. Wikipedia discovery returns HTTP 403 on the phone and remains an open issue; passing the manual gate does not mean that integration is fixed. No real-model AI acceptance is inferred from this decision.
+- The user's earlier manual pass predates the current Gemini-only card flow. Retest card generation, the curiosity-first writing quality, backend retry/fallback and offline reading on the phone; do not treat the older Wikipedia flow's acceptance as coverage of this change.
 - Maintain at least 50 locally available unread cards as the connected-state target. Refill proactively at 55 or fewer toward 60, using cached backend cards first. The app reports authoritative inventory to the server; the server cannot inspect phone SQLite directly. Offline use or provider failures can reduce this count; reading must never block to enforce the target.
 - A card is read on its first meaningful Seen impression, including first reading from Favorites/details. Expanded and review actions are not required to mark it read. Read/unread state survives restart.
 - Keep at most 30 read, non-favorite card bodies on the phone; remove the oldest by first-read time. Favorites are never automatically deleted and do not count toward that cap. Unread cards are never deleted by read-history cleanup. Thus total local cards can exceed 80, especially when favorites accumulate.
@@ -115,4 +118,4 @@ The current implementation uses the locked Expo, TypeScript, and Expo SQLite cho
 - Scheduled reviews do not exempt non-favorites from retention. Evicting their bodies removes local pending review eligibility, while preserving review-action history. Retained/favorite cards continue to use the existing deterministic review rules.
 - Persist the queue and append refill results without reshuffling the active deck. Keep the 70/20/10 lane scheduler: unread discovery/interest cards plus eligible retained reviews. Opening Favorites does not advance the currently displayed feed page, although a first view updates read state; future unread lanes skip cards already read through Favorites.
 - Add an offline Favorites library in Phase 9. Removing a favorite changes the library and analytics immediately and makes a read card eligible for cleanup; defer eviction of an actively open body until it is safe to leave that view.
-- Support cloud-provider capabilities in the new backend, with model/provider selection and key/budget configuration explicit. This documentation change performs no API calls or billing activation. Keep paid generation disabled until its provider/model and spend limits are explicitly approved; free-tier eligibility and quota must be verified at implementation time.
+- The backend's active cloud provider is Gemini only, with explicit model, key and budget configuration. Keep paid generation disabled; verify free-tier availability and provider quota before deliberate live generation.

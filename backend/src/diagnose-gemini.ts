@@ -6,7 +6,6 @@ import { Failure, TOPICS } from './contracts/index.ts';
 import { cloudGenerator } from './providers/cloud.ts';
 import type { ProviderDiagnostic } from './providers/cloud.ts';
 import { outputSchema, prepare, prompt } from './preparation/cards.ts';
-import type { Reference } from './retrieval/wikipedia.ts';
 
 // One bounded real preparation request, never an automatic retry loop.
 // Hold the backend port so this cannot race the running service or its worker.
@@ -20,10 +19,8 @@ await new Promise<void>((resolve, reject) => {
 let store: Store | undefined;
 try {
   store = new Store(config.database);
-  const references = (store.db.prepare('SELECT body FROM sources').all() as { body: string }[]).map(r => JSON.parse(r.body) as Reference);
-  if (config.mode !== 'source-grounded' || !references.length) throw new Error('Diagnostic requires already fetched, licensed sources.');
   const topics = TOPICS.slice(0, config.batch);
-  const text = prompt(topics, references.map(r => ({ ...r, excerpt: r.excerpt.slice(0, 800) })), store.cards().slice(-15).map(c => c.title));
+  const text = prompt(topics, store.cards().slice(-15).map(c => c.title));
   if (Buffer.byteLength(text + JSON.stringify(outputSchema)) > config.maxInput) throw new Error('Diagnostic input exceeds the configured budget.');
   const id = store.queue(`gemini-diagnostic-${randomUUID()}`, topics.length);
   let diagnostic: ProviderDiagnostic | undefined;
@@ -33,7 +30,7 @@ try {
       diagnostic = value;
       store!.db.prepare('UPDATE jobs SET diagnostics=? WHERE id=?').run(JSON.stringify(value), id);
     });
-    const cards = prepare(raw, config, references, topics.length);
+    const cards = prepare(raw, config, topics.length);
     const added = store.addCards(cards, config.cacheLimit);
     store.markJob(id, 'completed');
     console.log(JSON.stringify({ state: 'completed', requestedCards: topics.length, addedCards: added, diagnostic, usage: store.usage() }));

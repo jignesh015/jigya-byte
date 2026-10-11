@@ -16,9 +16,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     return env[key] === 'true';
   };
   const provider = env.GENERATION_PROVIDER ?? 'disabled';
-  const mode = env.CONTENT_MODE ?? 'source-grounded';
-  if (!['disabled', 'gemini', 'openai'].includes(provider)) throw new Error('Invalid GENERATION_PROVIDER');
-  if (!['source-grounded', 'ai-only'].includes(mode)) throw new Error('Invalid CONTENT_MODE');
+  const mode = env.CONTENT_MODE ?? 'ai-only';
+  if (!['disabled', 'gemini'].includes(provider)) throw new Error('Only Gemini generation is supported');
+  if (mode !== 'ai-only') throw new Error('Only Gemini AI-only card generation is supported');
   const token = env.BACKEND_DEVICE_TOKEN ?? '';
   const thinkingLevel = env.GEMINI_THINKING_LEVEL || undefined;
   if (thinkingLevel && !['low', 'medium', 'high'].includes(thinkingLevel)) throw new Error('Invalid GEMINI_THINKING_LEVEL');
@@ -26,12 +26,10 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = {
     host: env.BACKEND_HOST ?? '127.0.0.1', port: integer('BACKEND_PORT', 4319, 0, 65535),
     token, database: resolve(env.BACKEND_DATABASE ?? './data/backend.sqlite'), provider, thinkingLevel,
-    mode: mode as 'source-grounded' | 'ai-only',
-    key: provider === 'gemini' ? env.GEMINI_API_KEY : env.OPENAI_API_KEY,
-    model: provider === 'gemini' ? env.GEMINI_MODEL : env.OPENAI_MODEL,
+    mode: 'ai-only' as const,
+    key: env.GEMINI_API_KEY,
+    model: env.GEMINI_MODEL,
     geminiFallbackModel: env.GEMINI_FALLBACK_MODEL || undefined,
-    openaiFallbackEnabled: boolean('OPENAI_FALLBACK_ENABLED'),
-    openaiKey: env.OPENAI_API_KEY, openaiModel: env.OPENAI_MODEL,
     freeConfirmed: boolean('GEMINI_FREE_TIER_CONFIRMED'), paid: boolean('ALLOW_PAID_CALLS'),
     requestLimit: integer('DAILY_REQUEST_LIMIT', 10), tokenLimit: integer('DAILY_TOKEN_LIMIT', 50000, 0, 1e9),
     costLimit: number('DAILY_COST_LIMIT', 0), requestCost: number('MAX_REQUEST_COST', 0),
@@ -40,7 +38,6 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     readLimit: integer('READ_NONFAVORITE_LIMIT', 30), batch: integer('GENERATION_BATCH_SIZE', 10, 1, 10),
     concurrency: integer('MAX_CONCURRENT_JOBS', 1, 1, 4), cacheLimit: integer('MAX_CACHE_CARDS', 500, 1),
     timeout: integer('REQUEST_TIMEOUT_MS', 30000, 100, 60000),
-    userAgent: env.WIKIMEDIA_USER_AGENT ?? 'JigyaByte/0.1 (personal local learning backend)',
   };
   if (!(config.unreadMin <= config.refillAt && config.refillAt < config.target)) throw new Error('Invalid unread threshold ordering');
   if (provider !== 'disabled' && (!config.key || !config.model || !/^[a-zA-Z0-9_.-]+$/.test(config.model))) {
@@ -52,18 +49,13 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   if (config.geminiFallbackModel && (provider !== 'gemini' || !/^[a-zA-Z0-9_.-]+$/.test(config.geminiFallbackModel) || config.geminiFallbackModel === config.model)) {
     throw new Error('Invalid GEMINI_FALLBACK_MODEL');
   }
-  if (config.openaiFallbackEnabled && (provider !== 'gemini' || !config.paid || !config.openaiKey || !config.openaiModel || !/^[a-zA-Z0-9_.-]+$/.test(config.openaiModel))) {
-    throw new Error('OpenAI fallback requires a server key, explicit model and approved paid budget');
-  }
   return config;
 }
 export type Config = ReturnType<typeof readConfig>;
 
 // Only explicitly configured routes participate; adding a secret never enables spending.
 export function providerRoutes(config: Config): Config[] {
-  const primary = config.provider === 'gemini' && config.freeConfirmed && config.openaiFallbackEnabled ? { ...config, paid: false } : config;
-  return [primary,
-    ...(config.provider === 'gemini' && config.geminiFallbackModel ? [{ ...primary, model: config.geminiFallbackModel }] : []),
-    ...(config.openaiFallbackEnabled ? [{ ...config, provider: 'openai', key: config.openaiKey, model: config.openaiModel, paid: true, thinkingLevel: undefined }] : []),
-  ];
+  return [config, ...(config.provider === 'gemini' && config.geminiFallbackModel
+    ? [{ ...config, model: config.geminiFallbackModel }]
+    : [])];
 }

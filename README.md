@@ -1,16 +1,16 @@
 # JigyaByte
 
-JigyaByte is a personal learning app for following curiosity one small idea at a time. Its focused, swipeable card feed blends fresh discoveries, topics you care about, and spaced review in a 70/20/10 mix, helping useful ideas return before they fade.
+JigyaByte is a local-first Android app for quick, memorable discoveries. Its feed mixes broad-topic cards, personal interests and spaced review. Cards should feel like a fun fact, an unexpected connection, a question worth thinking about, or a useful game/software development tip—not a textbook summary.
 
-Your library, favorites, interests, reviews, and reading history live on your Android device in SQLite, so you can keep reading and picking up where you left off offline. Wikipedia discovery is the default online source; an optional PC backend can replenish your deck, and optional local AI is off by default.
+## How new cards are made
 
-## Personal APK
+The Gemini API is the only content-generation provider. A PC backend sends a structured prompt to Gemini and syncs the resulting cards to the phone. The app does not fetch Wikipedia or use a local model. Gemini cards have no live references and are labeled unverified; check important claims independently. The Gemini API key stays in the ignored `backend/.env` file and never goes on the phone.
 
-Run `npm install`, then `npm run apk` with Node 22.13+ (Node 24 for the tests), JDK 17+ and an Android SDK installed. The build script accepts `-SdkPath` and `-JdkPath`, uses `ANDROID_HOME` / `JAVA_HOME`, or falls back to the installed Unity 6000.3.8f1 Android tools. The first build downloads Gradle/Android dependencies. No EAS account or cloud build is needed.
+The backend is optional for reading. Cards already saved in the app stay available offline, but creating more cards requires the backend to be running and paired with the app. To connect, open **Topics → Backend connection**, enable automatic refill, set the PC's private LAN address (or use USB forwarding), enter `BACKEND_DEVICE_TOKEN`, and save. See [backend/README.md](backend/README.md) for setup and retry details.
 
-The resulting `artifacts/JigyaByte.apk` includes its JavaScript and launches without Metro. It is an ARM64 personal testing release signed with the generated development key, not a store distribution build. Keep the signing key stable for future updates. App identity: `com.jigyabyte.app`. Version: 1.0.0. The target phone for this handoff is Samsung SM-S901E / Android 16. The extra 32-bit build hit a Windows CMake path-length error and is excluded from the default build.
+## Build and install
 
-Connect your phone with USB debugging enabled and accept its authorization prompt:
+Run `npm install`, then `npm run apk` with Node 22.13+ (Node 24 for backend tooling), JDK 17+ and an Android SDK. The build script uses `ANDROID_HOME` / `JAVA_HOME` or the installed Unity Android tools. The result is `artifacts/JigyaByte.apk`, an ARM64 personal testing build signed with the generated development key. Keep that key stable for updates. App identity: `com.jigyabyte.app`.
 
 ```powershell
 adb devices
@@ -18,61 +18,22 @@ adb install -r artifacts/JigyaByte.apk
 adb shell am start -n com.jigyabyte.app/.MainActivity
 ```
 
-An update with the same package/signing key preserves local data. Do not uninstall just to update. If Android rejects the signature, back up data before deciding to uninstall.
+An update with the same package and signing key preserves local data. Do not uninstall just to update. If Android rejects the signature, back up data before deciding to uninstall.
 
-## Manual test
+## Run the backend
 
-The user marked the manual gate passed for now on 2026-10-10. Wikipedia discovery returns HTTP 403 and remains an open issue; real-model AI acceptance is not inferred. Keep `docs/manual-test.md` as the repeatable checklist. Desktop SQLite and successful APK builds alone do not establish device acceptance.
-
-The installed APK now includes Favorites, a persistent queue, read-card retention and automatic backend replenishment. It targets 60 unread cards when supply is available, caps read non-favorite bodies at 30, and preserves favorites and compact all-time history. Starter samples are removed in schema version 5; only imported provider cards remain. The previous live run cached 25 Gemini cards before an uncertain upstream timeout stopped generation; cached reading remains available. Extended device stress acceptance is pending in `docs/manual-test.md`.
-
-## Backend connection
-
-For a desktop launcher on Windows, run `npm run backend:launcher`, then copy
-`artifacts/backend-launcher/JigyaByte Backend.exe` to your desktop. Double-click
-to start the server; keep its window open and press Ctrl+C to stop it. The project
-folder and installed Node runtime must stay in place. See `backend/README.md`.
-
-Keep provider keys only in the ignored `backend/.env`. For Wi-Fi, set `BACKEND_HOST` in that file to the laptop's Wi-Fi IPv4 address, start the PC server, and connect the phone to the same network. In **Topics → Backend connection**, enable automatic refill, use `http://192.168.1.3:4319` (or update it if the laptop's Wi-Fi address changes), enter `BACKEND_DEVICE_TOKEN` from the private environment file, and save. Android stores pairing settings in SecureStore and never receives the Gemini key. See `backend/README.md` for setup, limits and recovery.
-
-## Optional local AI
-
-Install Ollama and a local model yourself if wanted. The app does not download models or call paid APIs. Use an already installed model from `ollama list`; start Ollama with cloud disabled (`OLLAMA_NO_CLOUD=1`). In a second terminal:
+Keep provider credentials in `backend/.env`; use `backend/env.example` as a template for a new setup. Configure the Gemini model, fallback model, device pairing token and host address, then run:
 
 ```powershell
-$env:OLLAMA_MODEL = 'your-installed-local-model'
-npm run service
+npm run backend
 ```
 
-The service only contacts Ollama at `127.0.0.1:11434`, rejects cloud/remote models, and listens at `127.0.0.1:4318`. No API key is needed. It provides `GET /health`, `GET /cards` (up to 100 cached generated cards), and `POST /generate` with `{"topicId":"space"}`. Generation has a timeout, one concurrent request, bounded output and input validation. The phone stores imported cards permanently in SQLite; the PC cache is separate.
+The configured fallback chain is Gemini 3.8 Flash followed by Gemini 3.6 Flash. A model failure can advance once to the fallback; each attempt uses the existing local request and token budget. Paid calls remain disabled. Retry does not reset daily usage.
 
-For USB access:
+## Local data and checks
 
-```powershell
-adb reverse tcp:4318 tcp:4318
-```
+SQLite on the Android device owns saved cards, favorites, interests, review state and reading history. App schema 6 cleared the old card library during its migration; schema 7 removes the retired local-generator preference. Backend schema 6 clears old cached card bodies and deliveries and drops cached Wikipedia excerpts while preserving budget reservations and duplicate history.
 
-In the app open **Topics**, enable **Optional local AI**, use `http://127.0.0.1:4318`, and save. Reopen Topics and tap **Generate one AI card**. Generated cards are appended to the deck and labeled unverified. If generation fails, dismiss the message and use public discovery or keep reading locally. There are no startup calls to the PC.
+`npm run typecheck` and `npm run backend:typecheck` check TypeScript. `npm test` runs the local data and fixture integration checks; `npm run backend:test` runs the backend suite. These checks do not establish live Gemini availability or phone visual acceptance. See [docs/manual-test.md](docs/manual-test.md) for the current manual checklist.
 
-For LAN access, explicitly set `$env:JIGYABYTE_HOST = '0.0.0.0'` before starting the service, and enter your PC's private LAN address in the app. Permit port 4318 only on your trusted private network; the service has no account/authentication layer. Do not expose it through a router or public tunnel. Android cleartext HTTP is enabled for this personal local-service path; client settings accept only loopback/private IPv4 addresses. USB reverse must be reapplied after reconnecting the phone.
-
-## Local data and reset
-
-SQLite owns all interactions and settings. Seen and Expanded count each card once, under its primary topic; Favorites counts currently saved cards. Again schedules 10 minutes later, Got it 1 day later, Easy 7 days later. Restart the app after a review becomes due to rebuild the schedule.
-
-Android Settings → Apps → JigyaByte → Storage → Clear storage resets all local cards, favorites, review dates and settings. This is destructive. Next launch has an empty library; connect the backend or import public cards to populate it. Clearing the PC's `service/.cache` only removes the PC cache and never resets the phone.
-
-For a deliberate personal backup, close the app and use Android Studio Device Explorer to copy the app's `files/SQLite` directory, including any `jigyabyte.db-wal` / `jigyabyte.db-shm` files present. This requires a debuggable build (`npx expo run:android`, with Metro running), and is not available through `run-as` on the standalone release. The release has no in-app export/import feature yet; Android system backup is best-effort and must not be your only backup. Keep the installed release/data intact for routine testing and updates.
-
-## Development and checks
-
-Before publishing, run `npm run audit:public`. It checks files eligible for Git
-against local environment credentials and common secret patterns, and verifies
-the ignore rules without printing secrets. It does not scan commit history.
-All `.env` files and variants, local databases, signing keys, IDE state and build
-artifacts are excluded by the root `.gitignore`. The safe configuration template
-is `backend/env.example`; copy it to `backend/.env` for a fresh installation.
-
-`npm start` starts Expo Go review; `npm run android` builds/runs the native development app. Expo Go requires a compatible SDK 57 build. `npm run typecheck` checks TypeScript. `npm test` runs repository SQL against a temporary desktop SQLite file (including close/reopen), plus HTTP service tests with a stub local model. Tests require localhost access and do not call a real model or Wikimedia.
-
-Build guidance: [Expo local builds](https://docs.expo.dev/guides/local-app-production/). Local model setup: [Ollama API](https://docs.ollama.com/api/introduction) and [cloud disable configuration](https://github.com/ollama/ollama/blob/main/docs/faq.mdx).
+Before publishing, run `npm run audit:public`. The audit checks files eligible for Git against common credential patterns without printing secrets. `.env` files, local databases, signing keys and build artifacts are ignored.

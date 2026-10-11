@@ -25,7 +25,7 @@ function inventory(unread = 0, version = 1): Snapshot {
 function fixture(index: number): Card {
   // Unique lexical ideas; fixtures are never added to the production database.
   const word = index.toString(36).padStart(4, 'x');
-  return prepare({ cards: [{ title: `Fixture ${word}`, summary: `Sample ${word}`, explanation: `Mock explanation ${word}.`, primaryTopicId: 'space', topicIds: ['space'], sourceIds: [] }] }, liveConfig(), [], 1)[0];
+  return prepare({ cards: [{ title: `Fixture ${word}`, summary: `Sample ${word}`, explanation: `Mock explanation ${word}.`, primaryTopicId: 'space', topicIds: ['space'] }] }, liveConfig(), 1)[0];
 }
 function seed(store: Store, count = 60) { store.addCards(Array.from({ length: count }, (_, i) => fixture(i)), 500); }
 
@@ -34,7 +34,7 @@ test('configuration rejects missing token, invalid ordering, and unapproved paid
   assert.throws(() => config({ UNREAD_TARGET: '50' }), /ordering/);
   assert.throws(() => config({ GENERATION_BATCH_SIZE: '11' }), /GENERATION_BATCH_SIZE/);
   assert.throws(() => liveConfig({ GEMINI_FREE_TIER_CONFIRMED: 'false' }), /activation/);
-  assert.throws(() => liveConfig({ GENERATION_PROVIDER: 'openai', OPENAI_API_KEY: token, OPENAI_MODEL: 'mock-model' }), /activation/);
+  assert.throws(() => liveConfig({ GENERATION_PROVIDER: 'other' }), /Only Gemini/);
   assert.throws(() => config({ ALLOW_PAID_CALLS: 'yes' }), /Invalid/);
   assert.equal(config().provider, 'disabled');
 });
@@ -83,7 +83,7 @@ test('a persisted refill cycle continues from 47 through 57 to 60', () => {
 });
 test('rate-limit retries reserve every attempt and stop after three requests', async () => {
   const cfg = liveConfig(), store = new Store(':memory:'); store.sync(inventory(), cfg); let calls = 0;
-  const worker = new Worker(cfg, store, async () => { calls++; throw new Failure('quota_exhausted', 502, 5000); }, async () => []);
+  const worker = new Worker(cfg, store, async () => { calls++; throw new Failure('quota_exhausted', 502, 5000); });
   for (let i = 0; i < 3; i++) {
     await worker.tick();
     if (i < 2) {
@@ -102,15 +102,14 @@ test('paid reservations stop before exceeding configured maximum request cost', 
 });
 test('ambiguous model timeout remains uncertain and is never automatically repeated', async () => {
   const cfg = liveConfig(), store = new Store(':memory:'); store.sync(inventory(), cfg); let calls = 0;
-  const worker = new Worker(cfg, store, async () => { calls++; throw new Failure('upstream_timeout_or_network'); }, async () => []);
+  const worker = new Worker(cfg, store, async () => { calls++; throw new Failure('upstream_timeout_or_network'); });
   await worker.tick(); await worker.tick(); assert.equal(calls, 1);
   assert.equal(store.jobs()[0].state, 'uncertain'); assert.equal(store.sync(inventory(), cfg).refillState, 'degraded'); store.close();
 });
 
-test('fallback configuration is explicit and a saved OpenAI key cannot activate paid calls', () => {
-  const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', OPENAI_API_KEY: token, OPENAI_MODEL: 'mock-openai' });
+test('Gemini fallback configuration is explicit and validated', () => {
+  const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate' });
   assert.deepEqual(providerRoutes(cfg).map(c => c.model), ['mock-model', 'alternate']);
-  assert.throws(() => liveConfig({ OPENAI_FALLBACK_ENABLED: 'true', OPENAI_API_KEY: token, OPENAI_MODEL: 'mock-openai' }), /approved paid budget/);
   assert.throws(() => liveConfig({ GEMINI_FALLBACK_MODEL: 'mock-model' }), /FALLBACK_MODEL/);
 });
 
@@ -119,9 +118,9 @@ test('overload falls back once and successful cards identify the actual model', 
   const store = new Store(':memory:'); store.sync(inventory(), cfg); const calls: string[] = [];
   const worker = new Worker(cfg, store, async (_, report) => {
     calls.push(cfg.model!); report?.({ provider: 'gemini', model: cfg.model, httpStatus: 503 }); throw new Failure('upstream_unavailable');
-  }, async () => [], route => async (_, report) => {
+  }, route => async (_, report) => {
     calls.push(route.model!); report?.({ provider: route.provider, model: route.model, httpStatus: 200 });
-    return { cards: [{ title: 'Orbital resonance', summary: 'Repeated gravitational tugs', explanation: 'Orbital periods can form simple ratios.', primaryTopicId: 'space', topicIds: ['space'], sourceIds: [] }] };
+    return { cards: [{ title: 'Orbital resonance', summary: 'Repeated gravitational tugs', explanation: 'Orbital periods can form simple ratios.', primaryTopicId: 'space', topicIds: ['space'] }] };
   });
   await worker.tick(); assert.equal(store.jobs()[0].provider_index, 1);
   assert.equal(store.usage().requests, 1); assert.equal(store.jobs()[0].state, 'queued');
@@ -136,21 +135,11 @@ test('fallbacks stop at shared budgets and never follow credentials, validation 
   for (const code of ['upstream_unavailable', 'provider_credentials_or_access', 'provider_refused_or_incomplete', 'upstream_timeout_or_network', 'invalid_provider_output']) {
     const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', DAILY_REQUEST_LIMIT: '1' });
     const store = new Store(':memory:'); store.sync(inventory(), cfg); let fallbackCalls = 0;
-    const worker = new Worker(cfg, store, async () => { throw new Failure(code); }, async () => [], () => async () => { fallbackCalls++; return {}; });
+    const worker = new Worker(cfg, store, async () => { throw new Failure(code); }, () => async () => { fallbackCalls++; return {}; });
     await worker.tick(); store.db.prepare('UPDATE jobs SET next_at=0').run(); await worker.tick();
     assert.equal(fallbackCalls, 0); assert.equal(store.usage().requests, 1);
     assert.equal(store.jobs()[0].error, code === 'upstream_unavailable' ? 'budget_exhausted' : code); store.close();
   }
-});
-
-test('approved OpenAI comes after both Gemini models, with each attempt reserved and no cycling', async () => {
-  const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', OPENAI_API_KEY: token, OPENAI_MODEL: 'mock-openai', OPENAI_FALLBACK_ENABLED: 'true', ALLOW_PAID_CALLS: 'true', DAILY_COST_LIMIT: '1', MAX_REQUEST_COST: '0.5' });
-  const store = new Store(':memory:'); store.sync(inventory(), cfg); const calls: string[] = [];
-  const worker = new Worker(cfg, store, async () => { calls.push('mock-model'); throw new Failure('upstream_unavailable'); }, async () => [], route => async () => { calls.push(route.model!); throw new Failure('quota_exhausted'); });
-  for (let i = 0; i < 3; i++) { store.db.prepare('UPDATE jobs SET next_at=0').run(); await worker.tick(); }
-  await worker.tick(); assert.deepEqual(calls, ['mock-model', 'alternate', 'mock-openai']);
-  assert.equal(store.jobs()[0].state, 'failed'); assert.equal(store.usage().requests, 3);
-  assert.equal(store.usage().cost, 0.5); store.close();
 });
 
 test('queued fallback selection survives a backend restart without repeating primary', async () => {
@@ -158,29 +147,14 @@ test('queued fallback selection survives a backend restart without repeating pri
   const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate' }); let store = new Store(path);
   try {
     store.sync(inventory(), cfg);
-    await new Worker(cfg, store, async () => { throw new Failure('upstream_unavailable'); }, async () => []).tick();
+    await new Worker(cfg, store, async () => { throw new Failure('upstream_unavailable'); }).tick();
     store.close(); store = new Store(path); assert.equal(store.jobs()[0].provider_index, 1);
     store.db.prepare('UPDATE jobs SET next_at=0').run(); let primary = 0, fallback = 0;
-    await new Worker(cfg, store, async () => { primary++; return {}; }, async () => [], () => async () => { fallback++; throw new Failure('upstream_unavailable'); }).tick();
+    await new Worker(cfg, store, async () => { primary++; return {}; }, () => async () => { fallback++; throw new Failure('upstream_unavailable'); }).tick();
     assert.equal(primary, 0); assert.equal(fallback, 1); assert.equal(store.jobs()[0].state, 'failed'); assert.equal(store.usage().requests, 2);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('uncertain OpenAI fallback is never retried under the Gemini free-tier exception', async () => {
-  const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', OPENAI_API_KEY: token, OPENAI_MODEL: 'mock-openai', OPENAI_FALLBACK_ENABLED: 'true', ALLOW_PAID_CALLS: 'true', DAILY_COST_LIMIT: '1', MAX_REQUEST_COST: '0.5' });
-  const store = new Store(':memory:'); store.sync(inventory(), cfg); const job = store.jobs()[0];
-  store.db.prepare("UPDATE jobs SET state='uncertain',provider_index=2,diagnostics=? WHERE id=?").run(JSON.stringify({ provider: 'openai', model: 'mock-openai' }), job.id);
-  const backend = createBackend(cfg, store); backend.worker.stopped = true;
-  await new Promise<void>(resolve => backend.server.listen(0, '127.0.0.1', resolve));
-  const address = backend.server.address() as { port: number }, base = `http://127.0.0.1:${address.port}`;
-  try {
-    const headers = { Authorization: `Bearer ${token}` };
-    const status = await (await fetch(`${base}/v1/status`, { headers })).json() as { retryUncertainAllowed: boolean };
-    assert.equal(status.retryUncertainAllowed, false);
-    assert.equal((await fetch(`${base}/v1/jobs/${job.id}/retry`, { method: 'POST', headers })).status, 409);
-    assert.equal(store.job(job.id)!.state, 'uncertain'); assert.equal(store.usage().requests, 0);
-  } finally { await backend.close(); }
-});
 test('stale/conflicting snapshots roll back and history excludes evicted identities', () => {
   const store = new Store(':memory:'); seed(store, 2); const c = fixture(0);
   const s = inventory(0, 2); s.historyEvents = [{ eventId: 'seen:1', id: c.id, contentHash: c.contentHash, primaryTopicId: 'space', seen: true, expanded: false }];
@@ -209,7 +183,7 @@ test('restart preserves pending delivery and usage; ambiguous jobs never redispa
 test('worker generates ten cards in one call and reserves one request', async () => {
   const store = new Store(':memory:'); const cfg = liveConfig(); const s = inventory();
   store.sync(s, cfg); let calls = 0;
-  const worker = new Worker(cfg, store, async () => { calls++; return { cards: Array.from({ length: 10 }, (_, i) => ({ title: `Idea word${i}`, summary: `Summary word${i}`, explanation: `Explanation word${i}`, primaryTopicId: 'space', topicIds: ['space'], sourceIds: [] })) }; }, async () => []);
+  const worker = new Worker(cfg, store, async () => { calls++; return { cards: Array.from({ length: 10 }, (_, i) => ({ title: `Idea word${i}`, summary: `Summary word${i}`, explanation: `Explanation word${i}`, primaryTopicId: 'space', topicIds: ['space'] })) }; });
   await Promise.all([worker.tick(), worker.tick()]);
   assert.equal(calls, 1); assert.equal(store.cards().length, 10); assert.equal(store.usage().requests, 1);
   assert.equal(store.sync(s, cfg).cards.length, 10);
@@ -222,9 +196,9 @@ test('a queued batch shrinks to the latest deficit without per-card calls', asyn
   store.sync(inventory(57, 2), cfg);
   let calls = 0;
   const worker = new Worker(cfg, store, async text => {
-    calls++; assert.match(text, /Prepare exactly 3 English learning cards/);
-    return { cards: Array.from({ length: 3 }, (_, i) => ({ title: `Remaining word${i}`, summary: `Summary word${i}`, explanation: `Detail word${i}`, primaryTopicId: 'space', topicIds: ['space'], sourceIds: [] })) };
-  }, async () => []);
+    calls++; assert.match(text, /Prepare exactly 3 distinct English cards/);
+    return { cards: Array.from({ length: 3 }, (_, i) => ({ title: `Remaining word${i}`, summary: `Summary word${i}`, explanation: `Detail word${i}`, primaryTopicId: 'space', topicIds: ['space'] })) };
+  });
   await worker.tick();
   assert.equal(calls, 1); assert.equal(store.cards().length, 3); assert.equal(store.usage().requests, 1);
   store.close();
@@ -234,39 +208,30 @@ test('cancelled demand and exhausted budgets make zero provider calls', async ()
     const store = new Store(':memory:'); const cfg = liveConfig(exhausted ? { DAILY_REQUEST_LIMIT: '0' } : {});
     store.sync(inventory(), cfg);
     if (!exhausted) store.sync(inventory(60,2), cfg);
-    let calls = 0; const worker = new Worker(cfg, store, async () => { calls++; return {}; }, async () => []);
+    let calls = 0; const worker = new Worker(cfg, store, async () => { calls++; return {}; });
     await worker.tick(); assert.equal(calls, 0);
     assert.equal(store.jobs()[0].state, exhausted ? 'failed' : 'cancelled'); store.close();
   }
 });
-test('source-grounded failure never silently generates AI-only content', async () => {
-  const cfg = liveConfig({ CONTENT_MODE: 'source-grounded' }), store = new Store(':memory:'); store.sync(inventory(), cfg);
-  let calls = 0;
-  const worker = new Worker(cfg, store, async () => { calls++; return {}; }, async () => { throw new Failure('retrieval_provider_credentials_or_access'); });
-  await worker.tick(); assert.equal(calls, 0); assert.equal(store.jobs()[0].state, 'failed'); store.close();
-});
-test('dedup ignores provider switching and rejects invented citations and text overflow', () => {
+test('AI-only configuration rejects retrieved-source mode and card text overflow', () => {
+  assert.throws(() => liveConfig({ CONTENT_MODE: 'external' }), /Only Gemini/);
   const c = fixture(0); assert.equal(nearDuplicate(c, { ...c, providerId: 'different' }), true);
-  const raw = { title: 'One idea', summary: 'A summary', explanation: 'A detail', primaryTopicId: 'space', topicIds: ['space'], sourceIds: ['fake'] };
-  assert.throws(() => prepare({ cards: [raw] }, liveConfig(), [], 1), /fabricated/);
-  assert.throws(() => prepare({ cards: [{ ...raw, sourceIds: [], title: 'a'.repeat(101) }] }, liveConfig(), [], 1), /invalid_string/);
+  const raw = { title: 'One idea', summary: 'A summary', explanation: 'A detail', primaryTopicId: 'space', topicIds: ['space'] };
+  assert.equal(prepare({ cards: [raw] }, liveConfig(), 1)[0].sources.length, 0);
+  assert.throws(() => prepare({ cards: [{ ...raw, title: 'a'.repeat(101) }] }, liveConfig(), 1), /invalid_string/);
 });
-test('Gemini and OpenAI use header secrets, structured output and refusal handling', async () => {
-  for (const provider of ['gemini','openai']) {
-    const cfg = liveConfig(provider === 'openai' ? { GENERATION_PROVIDER: provider, OPENAI_API_KEY: randomBytes(24).toString('hex'), OPENAI_MODEL: 'mock-model', ALLOW_PAID_CALLS: 'true', DAILY_COST_LIMIT: '1', MAX_REQUEST_COST: '0.1' } : {});
-    let captured: RequestInit | undefined;
-    const mock: typeof fetch = async (url, init) => {
-      assert.ok(!String(url).includes(cfg.key!)); captured = init;
-      return Response.json(provider === 'gemini' ? { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"cards":[]}' }] } }] } : { status: 'completed', output: [{ content: [{ type: 'output_text', text: '{"cards":[]}' }] }] });
-    };
-    assert.deepEqual(await cloudGenerator(cfg, mock)('test'), { cards: [] });
-    const headers = captured!.headers as Record<string,string>;
-    assert.equal(provider === 'gemini' ? headers['x-goog-api-key'] : headers.Authorization, provider === 'gemini' ? cfg.key : `Bearer ${cfg.key}`);
-    assert.ok(!captured!.body!.toString().includes(cfg.key!));
-    if (provider === 'openai') assert.equal(JSON.parse(captured!.body!.toString()).store, false);
-    await assert.rejects(cloudGenerator(cfg, async () => Response.json(provider === 'gemini' ? { candidates: [{ finishReason: 'MAX_TOKENS' }] } : { status: 'incomplete' }))('test'), /refused_or_incomplete/);
-    await assert.rejects(cloudGenerator(cfg, async () => new Response('', { status: 403 }))('test'), /credentials_or_access/);
-  }
+test('Gemini uses a header secret, structured output and refusal handling', async () => {
+  const cfg = liveConfig(); let captured: RequestInit | undefined;
+  const mock: typeof fetch = async (url, init) => {
+    assert.ok(!String(url).includes(cfg.key!)); captured = init;
+    return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"cards":[]}' }] } }] });
+  };
+  assert.deepEqual(await cloudGenerator(cfg, mock)('test'), { cards: [] });
+  const headers = captured!.headers as Record<string,string>;
+  assert.equal(headers['x-goog-api-key'], cfg.key);
+  assert.ok(!captured!.body!.toString().includes(cfg.key!));
+  await assert.rejects(cloudGenerator(cfg, async () => Response.json({ candidates: [{ finishReason: 'MAX_TOKENS' }] }))('test'), /refused_or_incomplete/);
+  await assert.rejects(cloudGenerator(cfg, async () => new Response('', { status: 403 }))('test'), /credentials_or_access/);
 });
 test('HTTP authentication, validation and status never expose provider secrets', async () => {
   const cfg = liveConfig(); const backend = createBackend(cfg, new Store(':memory:'));
@@ -321,7 +286,7 @@ test('Gemini diagnostics retain exact overload and finish metadata without secre
   assert.equal(diagnostic!.finishReason,'MAX_TOKENS'); assert.equal(diagnostic!.thinkingTokens,8190); assert.equal(diagnostic!.outputTokens,2); assert.equal(diagnostic!.outputCharacters,9);
   assert.ok(!JSON.stringify(diagnostic).includes('private reasoning')); assert.ok(!JSON.stringify(diagnostic).includes('truncated'));
   const store = new Store(':memory:'); const s = inventory(); store.sync(s,cfg);
-  const worker = new Worker(cfg,store,cloudGenerator(cfg,async()=>Response.json({error:{status:'UNAVAILABLE',message:'High demand'}},{status:503})),async()=>[]);
+  const worker = new Worker(cfg,store,cloudGenerator(cfg,async()=>Response.json({error:{status:'UNAVAILABLE',message:'High demand'}},{status:503})));
   const started=Date.now(); await worker.tick();
   const row=store.db.prepare('SELECT diagnostics,next_at,state FROM jobs').get() as {diagnostics:string;next_at:number;state:string};
   assert.equal(JSON.parse(row.diagnostics).httpStatus,503); assert.equal(row.state,'queued'); assert.ok(row.next_at>=started+10000); assert.equal(store.usage().requests,1); store.close();

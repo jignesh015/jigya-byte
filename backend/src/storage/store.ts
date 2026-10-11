@@ -16,7 +16,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 4) throw new Error('Unsupported backend database version');
+    if (version > 6) throw new Error('Unsupported backend database version');
     if (!version) this.db.exec(`BEGIN;
       CREATE TABLE cards(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, fingerprint TEXT UNIQUE NOT NULL, body TEXT NOT NULL);
       CREATE TABLE devices(id TEXT PRIMARY KEY, version INTEGER NOT NULL, snapshot TEXT NOT NULL);
@@ -26,13 +26,23 @@ export class Store {
       CREATE TABLE jobs(id TEXT PRIMARY KEY, device_id TEXT NOT NULL, count INTEGER NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0, error TEXT);
       CREATE UNIQUE INDEX one_active_job ON jobs(device_id) WHERE state IN ('queued','running','uncertain');
       CREATE TABLE usage(day TEXT PRIMARY KEY, requests INTEGER NOT NULL, tokens INTEGER NOT NULL, cost REAL NOT NULL);
-      CREATE TABLE sources(id TEXT PRIMARY KEY, body TEXT NOT NULL, fetched_at INTEGER NOT NULL);
       PRAGMA user_version=1; COMMIT;`);
     if (version < 2) this.db.exec(`BEGIN;
       ALTER TABLE devices ADD COLUMN refilling INTEGER NOT NULL DEFAULT 0;
       PRAGMA user_version=2; COMMIT;`);
     if (version < 3) this.db.exec(`BEGIN; ALTER TABLE jobs ADD COLUMN diagnostics TEXT; PRAGMA user_version=3; COMMIT;`);
     if (version < 4) this.db.exec(`BEGIN; ALTER TABLE jobs ADD COLUMN provider_index INTEGER NOT NULL DEFAULT 0; ALTER TABLE jobs ADD COLUMN attempt_log TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version=4; COMMIT;`);
+    if (version < 5) this.db.exec(`BEGIN;
+      DELETE FROM deliveries;
+      DELETE FROM cards;
+      PRAGMA user_version=5;
+      COMMIT;`);
+    if (version < 6) this.db.exec(`BEGIN;
+      DELETE FROM deliveries;
+      DELETE FROM cards;
+      DROP TABLE IF EXISTS sources;
+      PRAGMA user_version=6;
+      COMMIT;`);
     // A crash after dispatch is ambiguous. Do not repeat a potentially charged request.
     this.db.prepare("UPDATE jobs SET state='uncertain', error='interrupted_request_requires_reconciliation' WHERE state='running'").run();
   }

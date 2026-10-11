@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
+  Animated,
   BackHandler,
   Dimensions,
-  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -23,14 +23,11 @@ import {
   getAnalytics,
   getCards,
   getInterests,
-  getGeneratorSettings,
   getRecentlyShownCardIds,
-  importCards,
   initializeDatabase,
   recordCardImpression,
   recordInteraction,
   saveInterests,
-  saveGeneratorSettings,
   scheduleReview,
   setFavorite,
   type AnalyticsMetric,
@@ -45,10 +42,7 @@ import {
 import { type FeedAssignment } from './src/data/feed';
 import { defaultBackendSettings, getBackendSettings, saveBackendSettings, type BackendSettings } from './src/data/backendConnection';
 import { BackendSync, type BackendStatus } from './src/data/backendSync';
-import { DiscoveryFailure } from './src/data/discoveryProvider';
-import { topics } from './src/data/cardContent';
-import { wikimediaProvider } from './src/data/wikimediaProvider';
-import { defaultGeneratorSettings, LocalCardGenerator, type GeneratorSettings } from './src/data/cardGenerator';
+import { topicColor, topics } from './src/data/cardContent';
 
 const colors = {
   background: '#090a0a',
@@ -62,10 +56,9 @@ const colors = {
   danger: '#3c211d',
 };
 
-const fallbackLicenseUrl = 'https://creativecommons.org/licenses/by-sa/4.0/';
 type Tab = 'feed' | 'favorites' | 'analytics';
 type AppView = 'main' | 'detail' | 'interests';
-type DiscoveryNotice = { kind: 'success' | 'empty' | 'offline' | 'error'; message: string } | null;
+type DiscoveryNotice = { kind: 'success' | 'offline' | 'error'; message: string } | null;
 
 const metricLabels: Record<AnalyticsMetric, string> = {
   seen: 'Seen',
@@ -79,6 +72,45 @@ function topicName(topicId: string): string {
 
 function SectionLabel({ children }: { children: string }) {
   return <Text style={styles.sectionLabel}>{children.toUpperCase()}</Text>;
+}
+
+function CardDescription({ text }: { text: string }) {
+  const [space, setSpace] = useState({ width: 0, height: 0 });
+  const fontSize = useMemo(() => {
+    if (space.width <= 0 || space.height <= 0) return 18;
+
+    const characterCount = Math.max(1, text.trim().length);
+    let bestFit = 18;
+    for (let candidate = 18; candidate <= 52; candidate += 1) {
+      const estimatedCharactersPerLine = space.width / (candidate * 0.52);
+      const estimatedLines = Math.ceil(characterCount / estimatedCharactersPerLine);
+      const estimatedHeight = estimatedLines * candidate * 1.42;
+      if (estimatedHeight > space.height * 0.9) break;
+      bestFit = candidate;
+    }
+    return bestFit;
+  }, [space.height, space.width, text]);
+  const lineHeight = fontSize * 1.42;
+  const maxLines = space.height > 0 ? Math.max(1, Math.floor((space.height * 0.98) / lineHeight)) : undefined;
+
+  return (
+    <View
+      style={styles.cardSummarySpace}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        setSpace((current) => current.width === width && current.height === height ? current : { width, height });
+      }}
+    >
+      <Text
+        adjustsFontSizeToFit
+        minimumFontScale={0.82}
+        numberOfLines={maxLines}
+        style={[styles.cardSummary, { fontSize, lineHeight }]}
+      >
+        {text}
+      </Text>
+    </View>
+  );
 }
 
 function ActionButton({
@@ -117,6 +149,7 @@ function FeedScreen({
   assignments,
   active,
   discoveryBusy,
+  geminiEnabled,
   discoveryNotice,
   onFavorite,
   onOpenDetails,
@@ -130,6 +163,7 @@ function FeedScreen({
   assignments: FeedAssignment[];
   active: boolean;
   discoveryBusy: boolean;
+  geminiEnabled: boolean;
   discoveryNotice: DiscoveryNotice;
   onFavorite: (card: Card) => void;
   onOpenDetails: (card: Card) => void;
@@ -144,7 +178,8 @@ function FeedScreen({
   const reportedSeen = useRef(new Set<string>());
   const scrollRef = useRef<ScrollView | null>(null);
   const currentIndex = useRef(0);
-  const gestureStart = useRef({ x: 0, y: 0 });
+  const gestureStart = useRef({ x: 0, y: 0, startedAt: 0 });
+  const swipeX = useRef(new Animated.Value(0)).current;
   const wasActive = useRef(false);
   const screenWidth = Dimensions.get('window').width;
   const backGestureEdge = 32;
@@ -163,6 +198,7 @@ function FeedScreen({
   useEffect(() => {
     if (active && !wasActive.current) {
       requestAnimationFrame(() => {
+        swipeX.setValue(0);
         const maxOffset = Math.max(0, (assignments.length - 1) * scrollMetrics.current.viewportHeight);
         const offset = Math.min(scrollMetrics.current.offset, maxOffset);
         currentIndex.current = scrollMetrics.current.viewportHeight > 0
@@ -171,15 +207,18 @@ function FeedScreen({
         scrollRef.current?.scrollTo({ y: offset, animated: false });
         reportSeen(currentIndex.current);
       });
+    } else if (!active && wasActive.current) {
+      // The detail overlay is already mounted by the time this effect runs, so reset behind it.
+      swipeX.setValue(0);
     }
     wasActive.current = active;
-  }, [active, assignments.length, reportSeen]);
+  }, [active, assignments.length, reportSeen, swipeX]);
 
   return (
-    <View
+    <Animated.View
       style={styles.feedRoot}
       onTouchStart={(event) => {
-        gestureStart.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY };
+        gestureStart.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY, startedAt: Date.now() };
       }}
       onMoveShouldSetResponderCapture={(event) => {
         const deltaX = event.nativeEvent.pageX - gestureStart.current.x;
@@ -187,16 +226,31 @@ function FeedScreen({
         const startedAwayFromBackEdges = gestureStart.current.x > backGestureEdge
           && gestureStart.current.x < screenWidth - backGestureEdge;
         return active && assignments.length > 0 && startedAwayFromBackEdges
-          && deltaX < -24 && Math.abs(deltaX) > Math.abs(deltaY) * 1.25;
+          && deltaX < -6 && Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
+      }}
+      onResponderMove={(event) => {
+        const deltaX = event.nativeEvent.pageX - gestureStart.current.x;
+        swipeX.setValue(Math.max(-screenWidth, Math.min(0, deltaX)));
       }}
       onResponderRelease={(event) => {
         const deltaX = event.nativeEvent.pageX - gestureStart.current.x;
         const deltaY = event.nativeEvent.pageY - gestureStart.current.y;
         const card = cardsById.get(assignments[currentIndex.current]?.cardId ?? '');
-        if (card && deltaX < -60 && Math.abs(deltaX) > Math.abs(deltaY) * 1.25) onOpenDetails(card);
+        const elapsed = Math.max(1, Date.now() - gestureStart.current.startedAt);
+        const quickFlick = deltaX <= -18 && deltaX / elapsed <= -0.55;
+        if (card && (deltaX <= -40 || quickFlick) && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
+          Animated.timing(swipeX, { toValue: -screenWidth, duration: 110, useNativeDriver: false }).start(({ finished }) => {
+            if (finished) onOpenDetails(card);
+            else swipeX.setValue(0);
+          });
+        } else {
+          Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start();
+        }
       }}
+      onResponderTerminate={() => Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start()}
       onResponderTerminationRequest={() => false}
     >
+      <Animated.View style={[styles.feedRoot, { transform: [{ translateX: swipeX }] }]}>
       <ScrollView
         ref={scrollRef}
         style={styles.scrollView}
@@ -235,24 +289,15 @@ function FeedScreen({
         {assignments.length === 0 ? (
           <View style={[styles.feedPage, pageHeight > 0 && { height: pageHeight }]}>
             <View style={styles.card}>
-              <View style={styles.feedHeader}>
-                <View style={styles.feedBrand}>
-                  <Text style={styles.eyebrow}>JIGYABYTE</Text>
-                  <Text style={styles.introText}>A little more curious.</Text>
-                </View>
-                <Pressable accessibilityRole="button" accessibilityLabel="Choose interest topics" onPress={onOpenInterests} style={({ pressed }) => [styles.topicsButton, pressed && styles.pressed]}>
-                  <Text style={styles.topicsButtonText}>Topics</Text>
-                </Pressable>
-              </View>
               <View style={styles.emptyCard}>
                 <Text style={styles.emptyTitle}>Your deck is ready to grow.</Text>
-                <Text style={styles.emptyText}>Find a card when you have a connection. Anything you save here stays on this device.</Text>
+                <Text style={styles.emptyText}>Connect your Gemini backend to create new cards. Anything already saved here stays on this device.</Text>
               </View>
-              <Pressable accessibilityRole="button" accessibilityLabel="Find a new learning card from Wikipedia" disabled={discoveryBusy} onPress={onDiscover} style={({ pressed }) => [styles.discoverButton, discoveryBusy && styles.disabled, pressed && styles.pressed]}>
+              <Pressable accessibilityRole="button" accessibilityLabel={geminiEnabled ? 'Request a new Gemini card' : 'Connect Gemini to create cards'} disabled={discoveryBusy} onPress={onDiscover} style={({ pressed }) => [styles.discoverButton, discoveryBusy && styles.disabled, pressed && styles.pressed]}>
                 {discoveryBusy ? <ActivityIndicator color={colors.background} size="small" /> : <Text style={styles.discoverGlyph}>＋</Text>}
                 <View style={styles.discoverCopy}>
-                  <Text style={styles.discoverTitle}>{discoveryBusy ? 'Finding a new idea…' : 'Find a new card'}</Text>
-                  <Text style={styles.discoverSubtitle}>Free public source · saved for offline reading</Text>
+                  <Text style={styles.discoverTitle}>{discoveryBusy ? 'Asking Gemini…' : geminiEnabled ? 'Get a fresh Gemini card' : 'Connect Gemini to add cards'}</Text>
+                  <Text style={styles.discoverSubtitle}>{geminiEnabled ? 'Generated on your PC · saved for offline reading' : 'Set up your PC backend in Topics'}</Text>
                 </View>
                 <Text style={styles.discoverArrow}>›</Text>
               </Pressable>
@@ -262,36 +307,26 @@ function FeedScreen({
           const card = cardsById.get(assignment.cardId);
           if (!card) return <View key={assignment.cardId} style={[styles.feedPage, pageHeight > 0 && { height: pageHeight }]}><View style={styles.card}><Text style={styles.emptyTitle}>This earlier card has left your recent history.</Text><Text style={styles.emptyText}>Swipe up to continue. Favorites stay available offline.</Text></View></View>;
           const laneLabel = assignment.lane === 'interest' ? 'YOUR INTERESTS'
-            : assignment.lane === 'review' ? 'READY TO REVIEW' : 'DISCOVERY';
+            : assignment.lane === 'review' ? 'READY TO REVIEW' : null;
 
           return (
             <View key={assignment.rank ?? card.id} style={[styles.feedPage, pageHeight > 0 && { height: pageHeight }]}>
               <View style={styles.card}>
-                <View>
-                  <View style={styles.feedHeader}>
-                    <View style={styles.feedBrand}>
-                      <Text style={styles.eyebrow}>JIGYABYTE</Text>
-                      <Text style={styles.introText}>A little more curious.</Text>
-                    </View>
-                    <Pressable accessibilityRole="button" accessibilityLabel="Choose interest topics" onPress={onOpenInterests} style={({ pressed }) => [styles.topicsButton, pressed && styles.pressed]}>
-                      <Text style={styles.topicsButtonText}>Topics</Text>
-                    </Pressable>
-                  </View>
+                <View style={styles.cardCopy}>
                   {discoveryNotice ? (
                     <View style={[styles.providerNotice, discoveryNotice.kind === 'offline' && styles.providerNoticeOffline]} accessibilityLiveRegion="polite">
                       <Text numberOfLines={2} style={styles.providerNoticeText}>{discoveryNotice.message}</Text>
                     </View>
                   ) : null}
                   <View style={[styles.cardMetaRow, styles.cardMetaSpaced]}>
-                    <SectionLabel>{laneLabel}</SectionLabel>
-                    <Text style={styles.cardTopic}>{topicName(card.primaryTopicId).toUpperCase()}</Text>
+                    {laneLabel ? <SectionLabel>{laneLabel}</SectionLabel> : <View />}
+                    <Text style={[styles.cardTopic, { color: topicColor(card.primaryTopicId) }]}>{topicName(card.primaryTopicId).toUpperCase()}</Text>
                   </View>
                   <Text numberOfLines={3} style={styles.cardTitle}>{card.title}</Text>
-                  <Text numberOfLines={4} style={styles.cardSummary}>{card.summary}</Text>
+                  <CardDescription text={card.summary} />
                 </View>
                 <View>
                   <View style={styles.cardFooter}>
-                    <Text numberOfLines={1} style={styles.attribution}>{card.sourceName.toUpperCase()}</Text>
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={card.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
@@ -302,21 +337,7 @@ function FeedScreen({
                       <HeartIcon filled={card.isFavorite} color={card.isFavorite ? colors.accent : colors.muted} />
                     </Pressable>
                   </View>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`More about ${card.title}`}
-                    onPress={() => onOpenDetails(card)}
-                    style={({ pressed }) => [styles.moreRow, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.moreArrow}>←</Text>
-                    <Text style={styles.moreText}>Swipe left for the full idea</Text>
-                    <Text style={styles.moreButton}>More</Text>
-                  </Pressable>
                   <View style={styles.feedPageFooter}>
-                    <Pressable accessibilityRole="button" accessibilityLabel="Find a new learning card from Wikipedia" disabled={discoveryBusy} onPress={onDiscover} style={({ pressed }) => [styles.discoverCompact, discoveryBusy && styles.disabled, pressed && styles.pressed]}>
-                      {discoveryBusy ? <ActivityIndicator color={colors.accent} size="small" /> : <Text style={styles.discoverCompactGlyph}>＋</Text>}
-                      <Text style={styles.discoverCompactText}>{discoveryBusy ? 'Finding a card…' : 'Find a new card'}</Text>
-                    </Pressable>
                     <Text style={styles.nextCardHint}>{index < assignments.length - 1 ? 'SWIPE UP FOR NEXT' : 'END OF YOUR DECK'}</Text>
                   </View>
                 </View>
@@ -325,7 +346,16 @@ function FeedScreen({
           );
         })}
       </ScrollView>
-    </View>
+      <View pointerEvents="box-none" style={[styles.feedHeader, styles.feedHeaderFixed]}>
+        <View style={styles.feedBrand}>
+          <Text style={[styles.eyebrow, styles.feedEyebrow]}>JIGYABYTE</Text>
+        </View>
+        <Pressable accessibilityRole="button" accessibilityLabel="Choose interest topics" onPress={onOpenInterests} style={({ pressed }) => [styles.topicsButton, pressed && styles.pressed]}>
+          <Text style={styles.topicsButtonText}>Topics</Text>
+        </Pressable>
+      </View>
+      </Animated.View>
+    </Animated.View>
   );
 }
 
@@ -345,8 +375,6 @@ function DetailScreen({
   backLabel: string;
 }) {
   if (!card) return null;
-  const fromWikipedia = card.providerId === 'wikimedia-en';
-
   return (
     <ScrollView contentContainerStyle={styles.detailContent} showsVerticalScrollIndicator={false}>
       <View style={styles.detailTopBar}>
@@ -369,7 +397,7 @@ function DetailScreen({
         </Pressable>
       </View>
 
-      <Text style={styles.detailTopic}>{topicName(card.primaryTopicId).toUpperCase()}</Text>
+      <Text style={[styles.detailTopic, { color: topicColor(card.primaryTopicId) }]}>{topicName(card.primaryTopicId).toUpperCase()}</Text>
       <Text style={styles.detailTitle}>{card.title}</Text>
       <View style={styles.shortAnswer}>
         <SectionLabel>The short answer</SectionLabel>
@@ -378,26 +406,10 @@ function DetailScreen({
       <Text style={styles.explanationText}>{card.explanation}</Text>
 
       <View style={styles.sourcePanel}>
-        {card.provenance ? <Text style={styles.sourceAttribution}>{card.provenance.contentMode === 'ai-only' ? 'AI generated · unverified' : 'AI prepared from fetched sources'} · {card.provenance.providerId} / {card.provenance.modelId}</Text> : null}
-        <Text style={styles.sourceHeading}>SOURCE & ATTRIBUTION</Text>
-        <Text style={styles.sourceAttribution}>{card.attribution}</Text>
-        {card.sourceUrl ? (
-          <Pressable onPress={() => void Linking.openURL(card.sourceUrl!)} style={({ pressed }) => [styles.sourceLink, pressed && styles.pressed]}>
-            <Text style={styles.sourceLinkText}>Open {fromWikipedia ? 'Wikipedia' : card.sourceName}</Text>
-            <Text style={styles.sourceArrow}>↗</Text>
-          </Pressable>
-        ) : null}
-        <Text style={styles.sourceLicense}>License: {card.license}</Text>
-        {fromWikipedia ? (
-          <Pressable onPress={() => void Linking.openURL(card.licenseUrl ?? fallbackLicenseUrl)} style={({ pressed }) => [styles.licenseLink, pressed && styles.pressed]}>
-            <Text style={styles.licenseLinkText}>Open license terms ↗</Text>
-          </Pressable>
-        ) : null}
-        {card.references.map(source => <View key={source.id}>
-          <Text style={styles.sourceAttribution}>{source.attribution}</Text>
-          <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(source.url)} style={styles.sourceLink}><Text style={styles.sourceLinkText}>{source.title} ↗</Text></Pressable>
-          <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(source.licenseUrl)} style={styles.licenseLink}><Text style={styles.licenseLinkText}>{source.license} ↗</Text></Pressable>
-        </View>)}
+        <Text style={styles.sourceHeading}>ABOUT THIS CARD</Text>
+        <Text style={styles.sourceAttribution}>Generated by Gemini · unverified</Text>
+        <Text style={styles.sourceLicense}>The card uses Gemini’s knowledge without live reference material. Check important claims independently.</Text>
+        {card.provenance ? <Text style={styles.sourceLicense}>Model: {card.provenance.modelId}</Text> : null}
       </View>
 
       <View style={styles.reviewPanel}>
@@ -423,24 +435,17 @@ function InterestsScreen({
   onSave,
   onCancel,
   onSkip,
-  generatorSettings,
-  onGenerate,
-  generationBusy,
   backendSettings,
 }: {
   initialIds: string[];
   firstLaunch: boolean;
   saving: boolean;
-  onSave: (ids: string[], generator: GeneratorSettings, backend: BackendSettings) => void;
+  onSave: (ids: string[], backend: BackendSettings) => void;
   onCancel: () => void;
   onSkip: () => void;
-  generatorSettings: GeneratorSettings;
-  onGenerate: (settings: GeneratorSettings) => void;
-  generationBusy: boolean;
   backendSettings: BackendSettings;
 }) {
   const [draft, setDraft] = useState(initialIds);
-  const [generator, setGenerator] = useState(generatorSettings);
   const [backend, setBackend] = useState(backendSettings);
   const initialKey = initialIds.join(',');
 
@@ -476,7 +481,7 @@ function InterestsScreen({
       </View>
       <View style={styles.generatorPanel}>
         <Text style={styles.reviewTitle}>Backend connection</Text>
-        <Text style={styles.interestsDescription}>Refill your offline library from your PC. Provider and model choices come from the backend.</Text>
+        <Text style={styles.interestsDescription}>Your PC backend uses Gemini to make short, curiosity-first cards, then saves them here for offline reading. The Gemini key stays on your PC.</Text>
         <Pressable accessibilityRole="switch" accessibilityState={{ checked: backend.enabled }} onPress={() => setBackend(current => ({ ...current, enabled: !current.enabled }))} style={styles.topicChip}>
           <Text style={styles.topicChipText}>{backend.enabled ? '✓ Automatic refill enabled' : '+ Enable automatic refill'}</Text>
         </Pressable>
@@ -484,34 +489,17 @@ function InterestsScreen({
         <TextInput accessibilityLabel="Backend pairing token" value={backend.pairingToken} onChangeText={pairingToken => setBackend(current => ({ ...current, pairingToken }))} secureTextEntry autoCapitalize="none" autoCorrect={false} style={styles.serviceInput} placeholder="Backend pairing token" placeholderTextColor={colors.muted} />
         <Text style={styles.reviewHint}>Use BACKEND_DEVICE_TOKEN from the PC configuration. Your Gemini key stays on the PC.</Text>
       </View>
-      <View style={styles.generatorPanel}>
-        <Text style={styles.reviewTitle}>Optional local AI</Text>
-        <Text style={styles.interestsDescription}>Generate an unverified explanation using a model on your PC. Public discovery and saved cards work without it.</Text>
-        <Pressable accessibilityRole="switch" accessibilityState={{ checked: generator.enabled }}
-          onPress={() => setGenerator(current => ({ ...current, enabled: !current.enabled }))} style={styles.topicChip}>
-          <Text style={styles.topicChipText}>{generator.enabled ? '✓ Local AI enabled' : '+ Enable local AI'}</Text>
-        </Pressable>
-        {generator.enabled ? <>
-          <Text style={styles.reviewHint}>PC service address</Text>
-          <TextInput accessibilityLabel="Local PC service address" value={generator.serviceUrl}
-            onChangeText={serviceUrl => setGenerator(current => ({ ...current, serviceUrl }))}
-            autoCapitalize="none" autoCorrect={false} keyboardType="url" style={styles.serviceInput} />
-          <ActionButton label={generationBusy ? 'Generating…' : 'Generate one AI card'} disabled={generationBusy || saving || firstLaunch}
-            onPress={() => onGenerate(generator)} />
-          <Text style={styles.reviewHint}>{firstLaunch ? 'Save your settings first, then reopen Topics to generate.' : 'Requires a running local service and installed model. No paid APIs.'}</Text>
-        </> : null}
-      </View>
       <Pressable
         accessibilityRole="button"
         disabled={saving}
-        onPress={() => onSave(draft, generator, backend)}
+        onPress={() => onSave(draft, backend)}
         style={({ pressed }) => [styles.primaryButton, saving && styles.disabled, pressed && styles.pressed]}
       >
         <Text style={styles.primaryButtonText}>{saving ? 'Saving…' : 'Save interests'}</Text>
       </Pressable>
       {firstLaunch ? (
         <Pressable accessibilityRole="button" disabled={saving} onPress={onSkip} style={({ pressed }) => [styles.skipButton, pressed && styles.pressed]}>
-          <Text style={styles.skipButtonText}>Explore with discoveries for now</Text>
+          <Text style={styles.skipButtonText}>Save topics and connect Gemini later</Text>
         </Pressable>
       ) : (
         <Pressable accessibilityRole="button" disabled={saving} onPress={onCancel} style={({ pressed }) => [styles.skipButton, pressed && styles.pressed]}>
@@ -585,7 +573,7 @@ function AnalyticsScreen({ snapshot, selected, onSelect, backendStatus, onRetry,
       {snapshot?.totals[selected] === 0 ? (
         <Text style={styles.chartFootnote} accessibilityLiveRegion="polite">
           {selected === 'seen' ? 'Read a card in the Feed to start your chart.'
-            : selected === 'expanded' ? 'Open More on a card to explore an idea.'
+            : selected === 'expanded' ? 'Swipe left on a card to explore an idea.'
               : 'Save a card with the heart to see your favorites here.'}
         </Text>
       ) : null}
@@ -595,9 +583,9 @@ function AnalyticsScreen({ snapshot, selected, onSelect, backendStatus, onRetry,
           const fill = value === 0 ? 0 : Math.max(4, (value / maxValue) * 100);
           return (
             <View key={topic.id} style={styles.chartRow} accessible accessibilityLabel={`${topic.name}: ${value} ${metricLabels[selected].toLowerCase()} cards`}>
-              <Text style={styles.chartTopic}>{topic.name}</Text>
+              <Text style={[styles.chartTopic, { color: topicColor(topic.id) }]}>{topic.name}</Text>
               <View style={styles.barTrack}>
-                <View style={[styles.bar, { width: `${fill}%` }]} />
+                <View style={[styles.bar, { width: `${fill}%`, backgroundColor: topicColor(topic.id) }]} />
               </View>
               <Text style={styles.chartValue}>{value}</Text>
             </View>
@@ -615,7 +603,7 @@ function FavoritesScreen({ cards, onOpen, onFavorite, onFeed }: { cards: Card[];
     <Text style={styles.pageTitle}>Favorites</Text><Text style={styles.analyticsSubtitle}>Saved ideas, available offline.</Text>
     {!favorites.length ? <><Text style={styles.emptyText}>Tap a card’s heart to keep it here.</Text><ActionButton label="Back to feed" onPress={onFeed} /></> : favorites.map(card => <View key={card.id} style={styles.generatorPanel}>
       <Pressable accessibilityRole="button" accessibilityLabel={`Read ${card.title}`} onPress={() => onOpen(card)}>
-        <Text style={styles.cardTopic}>{topicName(card.primaryTopicId)}</Text><Text style={styles.reviewTitle}>{card.title}</Text><Text numberOfLines={3} style={styles.emptyText}>{card.summary}</Text>
+        <Text style={[styles.cardTopic, { color: topicColor(card.primaryTopicId) }]}>{topicName(card.primaryTopicId)}</Text><Text style={styles.reviewTitle}>{card.title}</Text><Text numberOfLines={3} style={styles.emptyText}>{card.summary}</Text>
       </Pressable><ActionButton compact label="Remove favorite" onPress={() => onFavorite(card)} />
     </View>)}
   </ScrollView>;
@@ -662,8 +650,6 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [savingInterests, setSavingInterests] = useState(false);
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
-  const [generationBusy, setGenerationBusy] = useState(false);
-  const [generatorSettings, setGeneratorSettings] = useState(defaultGeneratorSettings);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [discoveryNotice, setDiscoveryNotice] = useState<DiscoveryNotice>(null);
   const [error, setError] = useState<string | null>(null);
@@ -698,13 +684,12 @@ export default function App() {
     void (async () => {
       try {
         await initializeDatabase();
-        const [nextCards, nextAnalytics, savedInterests, recentlyShown, savedGenerator] = await Promise.all([
-          getCards(), getAnalytics(), getInterests(), getRecentlyShownCardIds(), getGeneratorSettings(),
+        const [nextCards, nextAnalytics, savedInterests, recentlyShown] = await Promise.all([
+          getCards(), getAnalytics(), getInterests(), getRecentlyShownCardIds(),
         ]);
         if (!active) return;
         recentIds.current = recentlyShown;
         setCards(nextCards);
-        setGeneratorSettings(savedGenerator);
         setAnalytics(nextAnalytics);
         setInterests(savedInterests ?? []);
         setInterestDraft(savedInterests ?? []);
@@ -821,11 +806,9 @@ export default function App() {
     setView('interests');
   }, [interests]);
 
-  const saveInterestSelection = useCallback(async (selectedIds: string[], generator = generatorSettings, backend = backendSettings) => {
+  const saveInterestSelection = useCallback(async (selectedIds: string[], backend = backendSettings) => {
     setSavingInterests(true);
     try {
-      await saveGeneratorSettings(generator);
-      setGeneratorSettings(generator);
       await saveInterests(selectedIds);
       const configured = await saveBackendSettings(backend);
       setBackendSettings(configured);
@@ -842,73 +825,32 @@ export default function App() {
     } finally {
       setSavingInterests(false);
     }
-  }, [backendSettings, generatorSettings, refreshLocalData]);
-
-  const generateCard = useCallback((settings: GeneratorSettings) => {
-    if (generationBusy || !settings.enabled) return;
-    setGenerationBusy(true);
-    void (async () => {
-      try {
-        await saveGeneratorSettings(settings);
-        setGeneratorSettings(settings);
-        const pool = topics.filter(topic => interests.includes(topic.id));
-        const candidates = pool.length ? pool : topics;
-        const topic = candidates[Math.floor(Math.random() * candidates.length)];
-        const card = await new LocalCardGenerator(settings.serviceUrl).generate(topic);
-        const count = await importCards([card]);
-        await refreshLocalData();
-        syncRef.current?.request();
-        setDiscoveryNotice({ kind: count ? 'success' : 'empty', message: count ? `Added AI explanation: ${card.title}. Unverified; saved offline.` : 'That AI idea is already saved.' });
-        setError(null);
-        setView('main');
-        setTab('feed');
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : 'Local generation unavailable. Saved cards remain readable.');
-      } finally { setGenerationBusy(false); }
-    })();
-  }, [generationBusy, interests, refreshLocalData]);
+  }, [backendSettings, refreshLocalData]);
 
   const discoverCard = useCallback(async () => {
     if (discoveryBusy) return;
+    if (!backendSettings.enabled || !syncRef.current) {
+      setInterestDraft(interests);
+      setView('interests');
+      setDiscoveryNotice({ kind: 'offline', message: 'Connect your Gemini backend in Topics to create new cards. Saved cards remain available offline.' });
+      return;
+    }
     setDiscoveryBusy(true);
     setDiscoveryNotice(null);
-      try {
-        const counts = topics.map((topic) => ({
-          topic,
-          count: cards.filter((card) => card.topicIds.includes(topic.id)).length,
-          preferred: interests.includes(topic.id),
-        }));
-        const preferred = counts.some((item) => item.preferred) ? counts.filter((item) => item.preferred) : counts;
-        const minimum = Math.min(...preferred.map((item) => item.count));
-        const leastCovered = preferred.filter((item) => item.count === minimum);
-        const selectedTopic = leastCovered[Math.floor(Math.random() * leastCovered.length)].topic;
-        const existingIds = new Set(cards.map((card) => card.id));
-        const discovered = await wikimediaProvider.discover(selectedTopic, existingIds);
-        if (!discovered) {
-          setDiscoveryNotice({ kind: 'empty', message: `No new ${selectedTopic.name} card was available. Try again to explore another topic.` });
-          return;
-        }
-        const importedCount = await importCards([discovered]);
-        if (importedCount === 0) {
-          setDiscoveryNotice({ kind: 'empty', message: 'That idea is already in your deck. Try again for another one.' });
-          return;
-        }
-        await refreshLocalData();
-        syncRef.current?.request();
-        setDiscoveryNotice({ kind: 'success', message: `Added “${discovered.title}” from Wikipedia. It is saved on this device.` });
-      } catch (cause) {
-        if (cause instanceof DiscoveryFailure) {
-          setDiscoveryNotice({
-            kind: cause.kind === 'offline' ? 'offline' : 'error',
-            message: cause.message,
-          });
-        } else {
-          setDiscoveryNotice({ kind: 'error', message: 'Could not add a card right now. Your saved cards are still available.' });
-        }
-      } finally {
-        setDiscoveryBusy(false);
-      }
-  }, [cards, discoveryBusy, interests, refreshLocalData]);
+    try {
+      const before = new Set(cards.map(card => card.id));
+      await syncRef.current.refresh();
+      const refreshed = await refreshLocalData();
+      const added = refreshed.find(card => !before.has(card.id));
+      setDiscoveryNotice(added
+        ? { kind: 'success', message: `Added “${added.title}” from Gemini. It is saved on this device and has not been independently verified.` }
+        : null);
+    } catch {
+      setDiscoveryNotice({ kind: 'error', message: 'Could not reach Gemini right now. Your saved cards remain available offline.' });
+    } finally {
+      setDiscoveryBusy(false);
+    }
+  }, [backendSettings.enabled, cards, discoveryBusy, interests, refreshLocalData]);
 
   const refreshFeed = useCallback(async () => {
     if (refreshingFeed || discoveryBusy) return;
@@ -917,11 +859,11 @@ export default function App() {
     try {
       await refreshLocalData();
       if (backendSettings.enabled && syncRef.current) await syncRef.current.refresh();
-      else await discoverCard();
+      else setDiscoveryNotice({ kind: 'offline', message: 'Connect your Gemini backend in Topics to create new cards. Saved cards remain available offline.' });
     } catch {
       setDiscoveryNotice({ kind: 'offline', message: 'Could not refresh right now. Saved cards remain available.' });
     } finally { setRefreshingFeed(false); }
-  }, [refreshingFeed, discoveryBusy, backendSettings.enabled, refreshLocalData, discoverCard]);
+  }, [refreshingFeed, discoveryBusy, backendSettings.enabled, refreshLocalData]);
 
   const selectedCard = cards.find((card) => card.id === detailCardId);
 
@@ -943,13 +885,14 @@ export default function App() {
                 </Pressable>
               ) : null}
 
-              <View style={[styles.mainContent, view !== 'main' && styles.hiddenPane]}>
+              <View style={[styles.mainContent, view === 'interests' && styles.hiddenPane]}>
                 <View style={[styles.mainPane, tab !== 'feed' && styles.hiddenPane]}>
                   <FeedScreen
                     cards={cards}
                     assignments={assignments}
                     active={view === 'main' && tab === 'feed'}
                     discoveryBusy={discoveryBusy}
+                    geminiEnabled={backendSettings.enabled}
                     discoveryNotice={discoveryNotice}
                     onFavorite={handleFavorite}
                     onOpenDetails={openDetails}
@@ -976,27 +919,26 @@ export default function App() {
                   initialIds={interestDraft}
                   firstLaunch={firstLaunch}
                   saving={savingInterests}
-                  onSave={(ids, generator, backend) => void saveInterestSelection(ids, generator, backend)}
+                  onSave={(ids, backend) => void saveInterestSelection(ids, backend)}
                   onCancel={() => setView('main')}
                   onSkip={() => void saveInterestSelection([])}
-                  generatorSettings={generatorSettings}
-                  generationBusy={generationBusy}
-                  onGenerate={generateCard}
                   backendSettings={backendSettings}
                 />
               ) : null}
 
               {view === 'detail' ? (
-                <ReaderTransition reducedMotion={reducedMotion}>
-                <DetailScreen
-                  card={selectedCard}
-                  onBack={closeReader}
-                  backLabel={readerOrigin.current === 'favorites' ? 'Back to favorites' : 'Back to feed'}
-                  onFavorite={handleFavorite}
-                  onReview={handleReview}
-                  reviewBusy={reviewBusy}
-                />
-                </ReaderTransition>
+                <View style={styles.readerOverlay}>
+                  <ReaderTransition reducedMotion={reducedMotion} onSwipeBack={closeReader}>
+                    <DetailScreen
+                      card={selectedCard}
+                      onBack={closeReader}
+                      backLabel={readerOrigin.current === 'favorites' ? 'Back to favorites' : 'Back to feed'}
+                      onFavorite={handleFavorite}
+                      onReview={handleReview}
+                      reviewBusy={reviewBusy}
+                    />
+                  </ReaderTransition>
+                </View>
               ) : null}
 
               {view === 'main' ? <BottomNavigation active={tab} onChange={setTab} /> : null}
@@ -1027,17 +969,19 @@ const styles = StyleSheet.create({
   scrollView: { flex: 1 },
   feedRoot: { flex: 1 },
   feedPages: { flexGrow: 1 },
-  feedPage: { paddingHorizontal: 12, paddingVertical: 10 },
+  feedPage: { padding: 0 },
   detailContent: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 34 },
+  readerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 5, elevation: 5 },
   analyticsContent: { paddingHorizontal: 20, paddingTop: 32, paddingBottom: 28 },
   interestsContent: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 50, paddingBottom: 34, justifyContent: 'center' },
   feedHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  feedHeaderFixed: { position: 'absolute', top: 8, left: 24, right: 24, zIndex: 3, elevation: 3 },
   feedBrand: { flex: 1 },
   eyebrow: { color: colors.accent, fontSize: 11, fontWeight: '800', letterSpacing: 4, marginBottom: 9 },
+  feedEyebrow: { marginBottom: 0 },
   pageTitle: { color: colors.text, fontSize: 29, fontWeight: '700', letterSpacing: -1.1 },
   topicsButton: { borderWidth: 1, borderColor: colors.border, borderRadius: 999, minHeight: 42, paddingHorizontal: 15, alignItems: 'center', justifyContent: 'center' },
   topicsButtonText: { color: colors.text, fontSize: 12, fontWeight: '600' },
-  introText: { color: colors.muted, fontSize: 14, lineHeight: 20, marginTop: 3 },
   discoverButton: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 68, backgroundColor: colors.accent, borderRadius: 18, paddingHorizontal: 16, marginBottom: 18 },
   discoverGlyph: { color: colors.background, fontSize: 28, fontWeight: '400' },
   discoverCopy: { flex: 1 },
@@ -1047,29 +991,23 @@ const styles = StyleSheet.create({
   providerNotice: { backgroundColor: colors.surfaceRaised, borderColor: colors.border, borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 14 },
   providerNoticeOffline: { borderColor: '#62413a', backgroundColor: colors.danger },
   providerNoticeText: { color: colors.text, fontSize: 12, lineHeight: 18 },
-  card: { flex: 1, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 24, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 14, justifyContent: 'space-between' },
+  card: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: 24, paddingTop: 30, paddingBottom: 14, justifyContent: 'space-between' },
+  cardCopy: { flex: 1 },
   cardMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   cardMetaSpaced: { marginTop: 27 },
   sectionLabel: { color: colors.accent, fontSize: 10, letterSpacing: 3, fontWeight: '800' },
   cardTopic: { color: colors.muted, fontSize: 9, letterSpacing: 1.2, fontWeight: '700' },
   cardTitle: { color: colors.text, fontSize: 25, fontWeight: '700', lineHeight: 31, letterSpacing: -0.5, marginTop: 18 },
-  cardSummary: { color: '#d6dad5', fontSize: 16, lineHeight: 25, marginTop: 12 },
-  cardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 17 },
-  attribution: { flex: 1, color: colors.muted, fontSize: 9, letterSpacing: 1.3, fontWeight: '700', marginRight: 12 },
+  cardSummarySpace: { flex: 1, marginTop: 12 },
+  cardSummary: { flex: 1, color: '#d6dad5', textAlignVertical: 'top' },
+  cardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 17 },
   favoriteButton: { paddingHorizontal: 4, paddingVertical: 1, minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
   detailFavorite: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  moreRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, borderTopWidth: 1, borderTopColor: colors.border, minHeight: 48, marginTop: 8 },
-  moreArrow: { color: colors.muted, fontSize: 20 },
-  moreText: { color: colors.muted, fontSize: 11 },
-  moreButton: { color: colors.accent, fontSize: 12, fontWeight: '800', marginLeft: 3 },
-  feedPageFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 6, paddingTop: 7 },
-  discoverCompact: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 48, paddingHorizontal: 4 },
-  discoverCompactGlyph: { color: colors.accent, fontSize: 18, fontWeight: '600' },
-  discoverCompactText: { color: colors.accent, fontSize: 11, fontWeight: '700' },
+  feedPageFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8, borderTopWidth: 1, borderTopColor: colors.border, marginTop: 6, paddingTop: 7 },
   nextCardHint: { color: colors.muted, fontSize: 8, fontWeight: '700', letterSpacing: 1.1 },
   pressed: { opacity: 0.7 },
   disabled: { opacity: 0.5 },
-  emptyCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: 22, marginTop: 4 },
+  emptyCard: { flex: 1, justifyContent: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: 22, marginTop: 4 },
   emptyTitle: { color: colors.text, fontSize: 19, fontWeight: '700' },
   emptyText: { color: colors.muted, fontSize: 14, lineHeight: 21, marginTop: 9 },
   detailTopBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 25 },

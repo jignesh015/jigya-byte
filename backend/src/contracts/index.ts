@@ -51,7 +51,6 @@ export function snapshot(value: unknown) {
     pendingDeliveryIds: array(v.pendingDeliveryIds ?? [], 100).map(id => string(id)) };
 }
 export type Snapshot = ReturnType<typeof snapshot>;
-export type Source = { id: string; title: string; url: string; attribution: string; license: string; licenseUrl: string; retrievedAt: string; providerId: string };
 export type Card = { id: string; schemaVersion: 1; contentHash: string; ideaFingerprint: string; title: string; summary: string; explanation: string;
-  primaryTopicId: string; topicIds: string[]; contentMode: 'source-grounded' | 'ai-only'; providerId: string; modelId: string;
-  promptVersion: string; generatedAt: string; sources: Source[] };
+  primaryTopicId: string; topicIds: string[]; contentMode: 'ai-only'; providerId: string; modelId: string;
+  promptVersion: string; generatedAt: string; sources: [] };

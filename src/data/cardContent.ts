@@ -35,6 +35,23 @@ export const topics: Topic[] = [
   { id: 'biology', name: 'Biology', sortOrder: 9 },
 ];
 
+export const topicColors: Record<string, string> = {
+  'game-design': '#C6A0F6',
+  science: '#66D8C7',
+  history: '#E6A565',
+  geography: '#78AAEF',
+  space: '#A99AF8',
+  economics: '#D9C46D',
+  psychology: '#E98BA0',
+  technology: '#66C8E3',
+  philosophy: '#D69AC8',
+  biology: '#A6D675',
+};
+
+export function topicColor(topicId: string): string {
+  return topicColors[topicId] ?? '#A1A7A3';
+}
+
 export async function contentHash(text: string): Promise<string> {
   return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, text);
 }

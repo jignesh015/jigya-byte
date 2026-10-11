@@ -156,8 +156,6 @@ export class BackendSync {
           provider_configuration: 'The provider rejected the backend request configuration.',
           provider_refused_or_incomplete: 'The provider could not complete this batch. Retry to request another.',
           duplicate_generation: 'The generated batch contained no new ideas. Retry to request another batch.',
-          retrieval_quota_exhausted: 'Source retrieval is rate limited. Retry later; saved cards remain readable.',
-          retrieval_unavailable: 'Source retrieval is unavailable. Retry later; saved cards remain readable.',
         };
         const message = reply.refillState === 'degraded' && timeout
           ? status.retryUncertainAllowed ? 'Gemini request timed out. Tap Retry to request another batch.' : 'Model request outcome is unknown. Refill is paused for reconciliation.'

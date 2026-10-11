@@ -62,11 +62,13 @@ function load(file) {
   assert.equal(db.prepare("SELECT COUNT(*) n FROM sources WHERE provider_id='jigyabyte-sample'").get().n,0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM feed_queue').get().n,0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM review_queue_marks').get().n,0);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version,5);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,7);
 
 
-  const legacy = (await data.getCards()).find(c=>c.id==='legacy-card');
-  assert.equal(legacy.firstReadAt,'2020-01-02T00:00:00Z'); assert.equal(legacy.isFavorite,true); assert.equal(legacy.nextReviewAt,'2099-01-01');
+  assert.equal((await data.getCards()).length,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM interaction_events').get().n,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM favorites').get().n,0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM review_state').get().n,0);
   assert.deepEqual(await data.getInterests(),['space']);
   // Remove only this fixture's personal state before exercising the isolated fixture tests.
   db.exec("DELETE FROM favorites; DELETE FROM interaction_events; DELETE FROM review_state; DELETE FROM card_topics WHERE card_id='legacy-card'; DELETE FROM cards WHERE id='legacy-card';");
@@ -99,9 +101,6 @@ function load(file) {
   data = load(path.resolve('src/data/database.ts'));
   await data.initializeDatabase();
   assert.deepEqual((await data.getAnalytics()).totals, { seen: 1, expanded: 1, favorites: 0 });
-  await data.saveGeneratorSettings({ enabled: true, serviceUrl: 'http://127.0.0.1:4318' });
-  assert.equal((await data.getGeneratorSettings()).enabled, true);
-  await assert.rejects(() => data.saveGeneratorSettings({ enabled: true, serviceUrl: 'https://paid.example.com' }));
   await data.scheduleReview(card.id, 'again');
   assert.ok((await data.getCards()).find(c => c.id === card.id).nextReviewAt);
   assert.equal(await data.importCards(fixtureCards), 0);
@@ -160,7 +159,7 @@ function load(file) {
   const invalid={...makeBackendCard(1001),summary:'a'.repeat(241)};
   assert.equal(await data.importBackendDelivery('invalid',[invalid]),0);
   assert.deepEqual((await data.getDeliveryOutbox()).find(r=>r.id==='invalid').ack.rejectedIds,[invalid.id]);
-  console.log('PASS: v4-to-v5 sample removal, migration, persistent read/history/queue, delivery outbox and dedup, 40 protected favorites, 30 read-body cap, safe active unfavorite, no resurrection, analytics/reviews and restart recovery.');
+  console.log('PASS: v4-to-v6 card-library reset and migration, persistent queue, delivery outbox and dedup, 40 protected favorites, 30 read-body cap, safe active unfavorite, no resurrection, analytics/reviews and restart recovery.');
   db.close();
   fs.rmSync(testFile);
   fs.rmdirSync(testFolder);

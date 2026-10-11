@@ -37,7 +37,7 @@ function load(file) {
   const config=readConfig({BACKEND_DEVICE_TOKEN:token,BACKEND_DATABASE:':memory:',GENERATION_PROVIDER:'gemini',GEMINI_API_KEY:'fixture-only',GEMINI_MODEL:'mock-model',GEMINI_FREE_TIER_CONFIRMED:'true'});
   const store=new Store(':memory:');
   const fixtureConfig={...config,mode:'ai-only',provider:'gemini',model:'mock-model'};
-  store.addCards(Array.from({length:100},(_,i)=>prepare({cards:[{title:`Idea unique${i}`,summary:`Summary unique${i}`,explanation:`Details unique${i}`,primaryTopicId:'space',topicIds:['space'],sourceIds:[]}]},fixtureConfig,[],1)[0]),500);
+  store.addCards(Array.from({length:100},(_,i)=>prepare({cards:[{title:`Idea unique${i}`,summary:`Summary unique${i}`,explanation:`Details unique${i}`,primaryTopicId:'space',topicIds:['space']}]},fixtureConfig,1)[0]),500);
   const backend=createBackend(config,store); backend.worker.stopped=true;
   await new Promise(resolve=>backend.server.listen(0,'127.0.0.1',resolve));
   let sync;

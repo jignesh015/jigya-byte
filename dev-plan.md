@@ -4,6 +4,8 @@ This checklist breaks the MVP into independently reviewable phases. Complete and
 
 **Manual gate, 2026-10-10:** Passed for now at the user's request. Wikipedia discovery throws HTTP 403 and remains an open issue; no successful Wikipedia import or real-model AI test is inferred. Earlier implementation-time validation notes below are historical. New work is planned in Phases 9–11 and `backend-plan.md`; this update changes documentation only.
 
+**Current content policy, 2026-10-11:** This plan's earlier public-provider and local-model design is superseded. Wikipedia retrieval and the Ollama prototype are removed; new cards are generated only through Gemini via the PC backend. Follow `agent.md` and `backend/README.md` for the active curiosity-first, unverified-card policy and current implementation.
+
 ## MVP outcome
 
 An installable, dark-only Android app named **JigyaByte** that works from local storage, presents a full-height, vertically paged learning feed, opens deeper card details with a left swipe or visible control, supports saved cards and due reviews, and shows category analytics. It can obtain content from a free public provider. AI generation and a PC-hosted service are optional additions, not prerequisites for using cached content.
