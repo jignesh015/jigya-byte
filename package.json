@@ -1,0 +1,35 @@
+{
+  "name": "jigyabyte",
+  "version": "1.0.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit",
+    "audit:public": "node scripts/audit-publication.mjs",
+    "test": "node scripts/test-data.cjs && node --test scripts/test-service.mjs && node scripts/test-backend-integration.cjs",
+    "service": "node service/server.mjs",
+    "backend": "npm --prefix backend start",
+    "backend:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend-launcher.ps1",
+    "backend:test": "npm --prefix backend test",
+    "backend:typecheck": "npm --prefix backend run typecheck",
+    "apk": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1"
+  },
+  "dependencies": {
+    "expo": "~57.0.0",
+    "expo-crypto": "~57.0.3",
+    "expo-navigation-bar": "~57.0.3",
+    "expo-secure-store": "~57.0.4",
+    "expo-sqlite": "~57.0.4",
+    "expo-system-ui": "~57.0.4",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-svg": "15.15.4"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.0",
+    "typescript": "~5.9.2"
+  }
+}

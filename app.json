@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "JigyaByte",
+    "slug": "jigyabyte",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "jigyabyte",
+    "icon": "./assets/icon.png",
+    "backgroundColor": "#090a0a",
+    "android": {
+      "package": "com.jigyabyte.app",
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
+      "userInterfaceStyle": "dark",
+      "versionCode": 1
+    },
+    "plugins": [
+      "./plugins/withLocalService.cjs",
+      "expo-sqlite",
+      [
+        "expo-navigation-bar",
+        {
+          "enforceContrast": false,
+          "style": "dark"
+        }
+      ],
+      "expo-secure-store"
+    ]
+  }
+}
