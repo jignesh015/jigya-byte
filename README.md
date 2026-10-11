@@ -1,6 +1,8 @@
 # JigyaByte
 
-Dark-only Android learning cards, stored locally with Expo SQLite. Feed, details, favorites, interests, reviews and analytics work without a PC service. Wikipedia discovery is the default online provider. Local AI is optional and off by default.
+JigyaByte is a personal learning app for following curiosity one small idea at a time. Its focused, swipeable card feed blends fresh discoveries, topics you care about, and spaced review in a 70/20/10 mix, helping useful ideas return before they fade.
+
+Your library, favorites, interests, reviews, and reading history live on your Android device in SQLite, so you can keep reading and picking up where you left off offline. Wikipedia discovery is the default online source; an optional PC backend can replenish your deck, and optional local AI is off by default.
 
 ## Personal APK
 
