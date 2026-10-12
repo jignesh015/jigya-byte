@@ -39,8 +39,8 @@ export function ReaderTransition({ children, reducedMotion, onSwipeBack }: { chi
         const deltaX = event.nativeEvent.pageX - gestureStart.current.x;
         const deltaY = event.nativeEvent.pageY - gestureStart.current.y;
         const elapsed = Math.max(1, Date.now() - gestureStart.current.startedAt);
-        const quickFlick = deltaX >= 18 && deltaX / elapsed >= 0.55;
-        const shouldGoBack = deltaX >= Math.max(34, screenWidth * 0.12) || quickFlick;
+        const quickFlick = deltaX >= 14 && deltaX / elapsed >= 0.45;
+        const shouldGoBack = deltaX >= Math.max(24, screenWidth * 0.075) || quickFlick;
         if (shouldGoBack && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
           Animated.timing(dragX, { toValue: screenWidth, duration: 110, useNativeDriver: false }).start(({ finished }) => {
             if (finished) onSwipeBackRef.current?.();

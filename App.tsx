@@ -5,8 +5,9 @@ import {
   Animated,
   BackHandler,
   Dimensions,
+  Easing,
+  Linking,
   Pressable,
-  RefreshControl,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -15,9 +16,12 @@ import {
   View,
 } from 'react-native';
 import { NavigationBar } from 'expo-navigation-bar';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { HeartIcon } from './src/components/HeartIcon';
+import { FavoriteBurst } from './src/components/FavoriteBurst';
 import { ReaderTransition } from './src/components/ReaderTransition';
 import { useReducedMotion } from './src/hooks/useReducedMotion';
+import { feedSwipeTarget } from './src/components/feedGesture';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
   getAnalytics,
@@ -56,9 +60,9 @@ const colors = {
   danger: '#3c211d',
 };
 
-type Tab = 'feed' | 'favorites' | 'analytics';
+type Tab = 'feed' | 'favorites' | 'analytics' | 'settings';
 type AppView = 'main' | 'detail' | 'interests';
-type DiscoveryNotice = { kind: 'success' | 'offline' | 'error'; message: string } | null;
+type DiscoveryNotice = { kind: 'success' | 'offline' | 'error'; message: string; state?: string; added?: number } | null;
 
 const metricLabels: Record<AnalyticsMetric, string> = {
   seen: 'Seen',
@@ -72,6 +76,53 @@ function topicName(topicId: string): string {
 
 function SectionLabel({ children }: { children: string }) {
   return <Text style={styles.sectionLabel}>{children.toUpperCase()}</Text>;
+}
+
+function FloatingDiscoveryToast({ notice, reducedMotion, onDismiss }: {
+  notice: NonNullable<DiscoveryNotice>;
+  reducedMotion: boolean;
+  onDismiss: () => void;
+}) {
+  const slide = useRef(new Animated.Value(1)).current;
+  const [toastHeight, setToastHeight] = useState(200);
+  const [dismissing, setDismissing] = useState(false);
+
+  useEffect(() => {
+    setDismissing(false);
+    slide.setValue(1);
+    Animated.timing(slide, {
+      toValue: 0, duration: reducedMotion ? 0 : 220,
+      easing: Easing.out(Easing.cubic), useNativeDriver: true,
+    }).start();
+    return () => slide.stopAnimation();
+  }, [notice, reducedMotion, slide]);
+
+  return (
+    <Animated.View
+      style={[styles.discoveryToast, {
+        transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [0, toastHeight + 32] }) }],
+        opacity: slide.interpolate({ inputRange: [0, 0.85, 1], outputRange: [1, 1, 0] }),
+      }]}
+      onLayout={(event) => setToastHeight(event.nativeEvent.layout.height)}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${notice.message} Tap to dismiss`}
+        accessibilityLiveRegion="polite"
+        disabled={dismissing}
+        onPress={() => {
+          setDismissing(true);
+          Animated.timing(slide, {
+            toValue: 1, duration: reducedMotion ? 0 : 160,
+            easing: Easing.in(Easing.quad), useNativeDriver: true,
+          }).start(({ finished }) => { if (finished) onDismiss(); });
+        }}
+        style={[styles.providerNotice, notice.kind !== 'success' && styles.providerNoticeOffline]}
+      >
+        <Text style={styles.providerNoticeText}>{notice.message}</Text>
+      </Pressable>
+    </Animated.View>
+  );
 }
 
 function CardDescription({ text }: { text: string }) {
@@ -150,11 +201,10 @@ function FeedScreen({
   active,
   discoveryBusy,
   geminiEnabled,
-  discoveryNotice,
   onFavorite,
   onOpenDetails,
   onSeen,
-  onOpenInterests,
+  onOpenSettings,
   onDiscover,
   refreshing,
   onRefresh,
@@ -164,11 +214,10 @@ function FeedScreen({
   active: boolean;
   discoveryBusy: boolean;
   geminiEnabled: boolean;
-  discoveryNotice: DiscoveryNotice;
   onFavorite: (card: Card) => void;
   onOpenDetails: (card: Card) => void;
   onSeen: (cardId: string, lane: FeedLane) => Promise<void>;
-  onOpenInterests: () => void;
+  onOpenSettings: () => void;
   onDiscover: () => void;
   refreshing: boolean;
   onRefresh: () => void;
@@ -179,11 +228,26 @@ function FeedScreen({
   const scrollRef = useRef<ScrollView | null>(null);
   const currentIndex = useRef(0);
   const gestureStart = useRef({ x: 0, y: 0, startedAt: 0 });
+  const gestureAxis = useRef<'horizontal' | 'vertical' | null>(null);
+  const gesturePage = useRef(0);
+  const lastCardTap = useRef({ cardId: '', at: 0 });
   const swipeX = useRef(new Animated.Value(0)).current;
+  const pullY = useRef(new Animated.Value(0)).current;
+  const reducedMotion = useReducedMotion();
   const wasActive = useRef(false);
   const screenWidth = Dimensions.get('window').width;
   const backGestureEdge = 32;
   const [pageHeight, setPageHeight] = useState(0);
+
+  const registerCardTap = useCallback((card: Card) => {
+    const now = Date.now();
+    if (lastCardTap.current.cardId === card.id && now - lastCardTap.current.at <= 360) {
+      lastCardTap.current = { cardId: '', at: 0 };
+      void onFavorite(card);
+      return;
+    }
+    lastCardTap.current = { cardId: card.id, at: now };
+  }, [onFavorite]);
 
   const reportSeen = useCallback((index: number) => {
     if (!active || scrollMetrics.current.viewportHeight <= 0) return;
@@ -199,8 +263,9 @@ function FeedScreen({
     if (active && !wasActive.current) {
       requestAnimationFrame(() => {
         swipeX.setValue(0);
-        const maxOffset = Math.max(0, (assignments.length - 1) * scrollMetrics.current.viewportHeight);
-        const offset = Math.min(scrollMetrics.current.offset, maxOffset);
+        const maxOffset = Math.max(0, assignments.length * scrollMetrics.current.viewportHeight);
+        const offset = Math.min(currentIndex.current * scrollMetrics.current.viewportHeight, maxOffset);
+        scrollMetrics.current.offset = offset;
         currentIndex.current = scrollMetrics.current.viewportHeight > 0
           ? Math.round(offset / scrollMetrics.current.viewportHeight)
           : 0;
@@ -219,26 +284,65 @@ function FeedScreen({
       style={styles.feedRoot}
       onTouchStart={(event) => {
         gestureStart.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY, startedAt: Date.now() };
+        gesturePage.current = currentIndex.current;
+        gestureAxis.current = null;
       }}
       onMoveShouldSetResponderCapture={(event) => {
         const deltaX = event.nativeEvent.pageX - gestureStart.current.x;
         const deltaY = event.nativeEvent.pageY - gestureStart.current.y;
         const startedAwayFromBackEdges = gestureStart.current.x > backGestureEdge
           && gestureStart.current.x < screenWidth - backGestureEdge;
-        return active && assignments.length > 0 && startedAwayFromBackEdges
-          && deltaX < -6 && Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
+        if (!active || assignments.length === 0) return false;
+        if (scrollMetrics.current.viewportHeight > 0 && Math.abs(deltaY) >= 3 && Math.abs(deltaY) > Math.abs(deltaX) * 1.15) {
+          gestureAxis.current = 'vertical';
+          return true;
+        }
+        if (startedAwayFromBackEdges && deltaX < -6 && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
+          gestureAxis.current = 'horizontal';
+          return true;
+        }
+        return false;
+      }}
+      onResponderGrant={() => {
+        // Stop an unfinished settle before following the next finger movement.
+        scrollRef.current?.scrollTo({ y: gesturePage.current * scrollMetrics.current.viewportHeight, animated: false });
       }}
       onResponderMove={(event) => {
+        if (gestureAxis.current === 'vertical') {
+          const deltaY = event.nativeEvent.pageY - gestureStart.current.y;
+          const height = scrollMetrics.current.viewportHeight;
+          // Native touch scrolling is disabled: this handler owns both drag and settle.
+          const offset = Math.max(0, Math.min(assignments.length * height, gesturePage.current * height - deltaY));
+          scrollRef.current?.scrollTo({ y: offset, animated: false });
+          if (gesturePage.current === 0) pullY.setValue(Math.min(80, Math.max(0, deltaY * 0.4)));
+          return;
+        }
+        if (gestureAxis.current !== 'horizontal') return;
         const deltaX = event.nativeEvent.pageX - gestureStart.current.x;
         swipeX.setValue(Math.max(-screenWidth, Math.min(0, deltaX)));
       }}
       onResponderRelease={(event) => {
         const deltaX = event.nativeEvent.pageX - gestureStart.current.x;
         const deltaY = event.nativeEvent.pageY - gestureStart.current.y;
-        const card = cardsById.get(assignments[currentIndex.current]?.cardId ?? '');
+        const axis = gestureAxis.current;
+        gestureAxis.current = null;
         const elapsed = Math.max(1, Date.now() - gestureStart.current.startedAt);
-        const quickFlick = deltaX <= -18 && deltaX / elapsed <= -0.55;
-        if (card && (deltaX <= -40 || quickFlick) && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
+        if (axis === 'vertical') {
+          const viewportHeight = scrollMetrics.current.viewportHeight;
+          const nextIndex = feedSwipeTarget(gesturePage.current, assignments.length, deltaY);
+          if (gesturePage.current === 0 && deltaY >= 64 && !refreshing) onRefresh();
+          Animated.timing(pullY, { toValue: 0, duration: reducedMotion ? 0 : 180, useNativeDriver: true }).start();
+          if (nextIndex !== currentIndex.current) {
+            currentIndex.current = nextIndex;
+            reportSeen(nextIndex);
+          }
+          scrollMetrics.current.offset = nextIndex * viewportHeight;
+          scrollRef.current?.scrollTo({ y: scrollMetrics.current.offset, animated: !reducedMotion });
+          return;
+        }
+        const card = cardsById.get(assignments[currentIndex.current]?.cardId ?? '');
+        const quickFlick = deltaX <= -14 && deltaX / elapsed <= -0.45;
+        if (card && (deltaX <= -28 || quickFlick) && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
           Animated.timing(swipeX, { toValue: -screenWidth, duration: 110, useNativeDriver: false }).start(({ finished }) => {
             if (finished) onOpenDetails(card);
             else swipeX.setValue(0);
@@ -247,19 +351,25 @@ function FeedScreen({
           Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start();
         }
       }}
-      onResponderTerminate={() => Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start()}
+      onResponderTerminate={() => {
+        const axis = gestureAxis.current;
+        gestureAxis.current = null;
+        if (axis === 'vertical') {
+          scrollMetrics.current.offset = currentIndex.current * scrollMetrics.current.viewportHeight;
+          scrollRef.current?.scrollTo({ y: scrollMetrics.current.offset, animated: !reducedMotion });
+        }
+        pullY.setValue(0);
+        Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start();
+      }}
       onResponderTerminationRequest={() => false}
     >
-      <Animated.View style={[styles.feedRoot, { transform: [{ translateX: swipeX }] }]}>
+      <Animated.View style={[styles.feedRoot, { transform: [{ translateX: swipeX }, { translateY: pullY }] }]}>
       <ScrollView
         ref={scrollRef}
         style={styles.scrollView}
         contentContainerStyle={styles.feedPages}
-        pagingEnabled
-        decelerationRate="fast"
-        bounces
-        alwaysBounceVertical
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} enabled={active} colors={[colors.accent]} progressBackgroundColor={colors.surfaceRaised} tintColor={colors.accent} />}
+        scrollEnabled={false}
+        bounces={false}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={100}
         onLayout={(event) => {
@@ -276,34 +386,8 @@ function FeedScreen({
           if (!active) return;
           scrollMetrics.current.offset = Math.max(0, event.nativeEvent.contentOffset.y);
         }}
-        onMomentumScrollEnd={(event) => {
-          if (!active) return;
-          const height = scrollMetrics.current.viewportHeight;
-          if (height <= 0) return;
-          const nextIndex = Math.max(0, Math.min(assignments.length - 1, Math.round(event.nativeEvent.contentOffset.y / height)));
-          currentIndex.current = nextIndex;
-          scrollMetrics.current.offset = nextIndex * height;
-          reportSeen(nextIndex);
-        }}
       >
-        {assignments.length === 0 ? (
-          <View style={[styles.feedPage, pageHeight > 0 && { height: pageHeight }]}>
-            <View style={styles.card}>
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyTitle}>Your deck is ready to grow.</Text>
-                <Text style={styles.emptyText}>Connect your Gemini backend to create new cards. Anything already saved here stays on this device.</Text>
-              </View>
-              <Pressable accessibilityRole="button" accessibilityLabel={geminiEnabled ? 'Request a new Gemini card' : 'Connect Gemini to create cards'} disabled={discoveryBusy} onPress={onDiscover} style={({ pressed }) => [styles.discoverButton, discoveryBusy && styles.disabled, pressed && styles.pressed]}>
-                {discoveryBusy ? <ActivityIndicator color={colors.background} size="small" /> : <Text style={styles.discoverGlyph}>＋</Text>}
-                <View style={styles.discoverCopy}>
-                  <Text style={styles.discoverTitle}>{discoveryBusy ? 'Asking Gemini…' : geminiEnabled ? 'Get a fresh Gemini card' : 'Connect Gemini to add cards'}</Text>
-                  <Text style={styles.discoverSubtitle}>{geminiEnabled ? 'Generated on your PC · saved for offline reading' : 'Set up your PC backend in Topics'}</Text>
-                </View>
-                <Text style={styles.discoverArrow}>›</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : assignments.map((assignment, index) => {
+        {assignments.map((assignment, index) => {
           const card = cardsById.get(assignment.cardId);
           if (!card) return <View key={assignment.cardId} style={[styles.feedPage, pageHeight > 0 && { height: pageHeight }]}><View style={styles.card}><Text style={styles.emptyTitle}>This earlier card has left your recent history.</Text><Text style={styles.emptyText}>Swipe up to continue. Favorites stay available offline.</Text></View></View>;
           const laneLabel = assignment.lane === 'interest' ? 'YOUR INTERESTS'
@@ -312,47 +396,66 @@ function FeedScreen({
           return (
             <View key={assignment.rank ?? card.id} style={[styles.feedPage, pageHeight > 0 && { height: pageHeight }]}>
               <View style={styles.card}>
-                <View style={styles.cardCopy}>
-                  {discoveryNotice ? (
-                    <View style={[styles.providerNotice, discoveryNotice.kind === 'offline' && styles.providerNoticeOffline]} accessibilityLiveRegion="polite">
-                      <Text numberOfLines={2} style={styles.providerNoticeText}>{discoveryNotice.message}</Text>
-                    </View>
-                  ) : null}
+                <Pressable accessible={false} onPress={() => registerCardTap(card)} style={styles.cardCopy}>
                   <View style={[styles.cardMetaRow, styles.cardMetaSpaced]}>
                     {laneLabel ? <SectionLabel>{laneLabel}</SectionLabel> : <View />}
                     <Text style={[styles.cardTopic, { color: topicColor(card.primaryTopicId) }]}>{topicName(card.primaryTopicId).toUpperCase()}</Text>
                   </View>
                   <Text numberOfLines={3} style={styles.cardTitle}>{card.title}</Text>
                   <CardDescription text={card.summary} />
-                </View>
+                </Pressable>
                 <View>
                   <View style={styles.cardFooter}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={card.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                      accessibilityState={{ selected: card.isFavorite }}
-                      onPress={() => onFavorite(card)}
-                      style={({ pressed }) => [styles.favoriteButton, pressed && styles.pressed]}
-                    >
-                      <HeartIcon filled={card.isFavorite} color={card.isFavorite ? colors.accent : colors.muted} />
-                    </Pressable>
+                    <FavoriteBurst filled={card.isFavorite} active={active && index === currentIndex.current} reducedMotion={reducedMotion} color={colors.accent}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={card.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                        accessibilityState={{ selected: card.isFavorite }}
+                        onPress={() => onFavorite(card)}
+                        style={({ pressed }) => [styles.favoriteButton, pressed && styles.pressed]}
+                      >
+                        <HeartIcon filled={card.isFavorite} color={card.isFavorite ? colors.accent : colors.muted} />
+                      </Pressable>
+                    </FavoriteBurst>
                   </View>
                   <View style={styles.feedPageFooter}>
-                    <Text style={styles.nextCardHint}>{index < assignments.length - 1 ? 'SWIPE UP FOR NEXT' : 'END OF YOUR DECK'}</Text>
+                    <Text style={styles.nextCardHint}>{index < assignments.length - 1 ? 'SWIPE UP FOR NEXT' : 'SWIPE UP FOR MORE'}</Text>
                   </View>
                 </View>
               </View>
             </View>
           );
         })}
+        <View key="feed-end-cta" style={[styles.feedPage, pageHeight > 0 && { height: pageHeight }]}>
+          <View style={styles.card}>
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>{assignments.length ? 'You’ve reached the end of your deck.' : 'Your deck is ready to grow.'}</Text>
+              <Text style={styles.emptyText}>{assignments.length
+                ? 'There are no more cards queued right now. Ask your backend to prepare more, or come back later.'
+                : 'Request more cards from your Gemini backend. Anything already saved here stays on this device.'}</Text>
+            </View>
+            <Pressable accessibilityRole="button" accessibilityLabel={discoveryBusy ? 'Checking for more cards' : geminiEnabled ? 'Load more cards' : 'Connect Gemini in Settings'} disabled={discoveryBusy} onPress={geminiEnabled ? onDiscover : onOpenSettings} style={({ pressed }) => [styles.discoverButton, discoveryBusy && styles.disabled, pressed && styles.pressed]}>
+              {discoveryBusy ? <ActivityIndicator color={colors.background} size="small" /> : <Text style={styles.discoverGlyph}>＋</Text>}
+              <View style={styles.discoverCopy}>
+                <Text style={styles.discoverTitle}>{discoveryBusy ? 'Checking for more cards…'
+                  : geminiEnabled ? 'Load more cards' : 'Connect Gemini in Settings'}</Text>
+                <Text style={styles.discoverSubtitle}>{geminiEnabled
+                  ? 'Ask your PC backend for another batch'
+                  : 'Open Settings → Topics to connect your PC backend'}</Text>
+              </View>
+              <Text style={styles.discoverArrow}>›</Text>
+            </Pressable>
+            <View style={styles.feedPageFooter}>
+              <Text style={styles.nextCardHint}>END OF YOUR DECK</Text>
+            </View>
+          </View>
+        </View>
       </ScrollView>
+      {refreshing && <ActivityIndicator accessibilityLabel="Refreshing feed" color={colors.accent} style={{ position: 'absolute', top: 64, alignSelf: 'center' }} />}
       <View pointerEvents="box-none" style={[styles.feedHeader, styles.feedHeaderFixed]}>
         <View style={styles.feedBrand}>
           <Text style={[styles.eyebrow, styles.feedEyebrow]}>JIGYABYTE</Text>
         </View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Choose interest topics" onPress={onOpenInterests} style={({ pressed }) => [styles.topicsButton, pressed && styles.pressed]}>
-          <Text style={styles.topicsButtonText}>Topics</Text>
-        </Pressable>
       </View>
       </Animated.View>
     </Animated.View>
@@ -408,7 +511,17 @@ function DetailScreen({
       <View style={styles.sourcePanel}>
         <Text style={styles.sourceHeading}>ABOUT THIS CARD</Text>
         <Text style={styles.sourceAttribution}>Generated by Gemini · unverified</Text>
-        <Text style={styles.sourceLicense}>The card uses Gemini’s knowledge without live reference material. Check important claims independently.</Text>
+        <Text style={styles.sourceLicense}>{card.references.length
+          ? 'Based on the linked source material. This AI summary is not independently verified.'
+          : 'The card uses Gemini’s knowledge without live reference material. Check important claims independently.'}</Text>
+        {card.references.map(source => (
+          <Pressable key={source.id} accessibilityRole="link" accessibilityLabel={`Open source: ${source.title}`}
+            onPress={() => { void Linking.openURL(source.url).catch(() => {}); }} style={({ pressed }) => [styles.shortAnswer, pressed && styles.pressed]}>
+            <Text style={styles.sourceAttribution}>{source.name} ↗</Text>
+            <Text style={styles.sourceLicense}>{source.title}</Text>
+            <Text style={styles.sourceLicense}>{source.dateKind === 'observed' ? 'Indexed' : 'Published'} {new Date(source.publishedAt).toLocaleDateString()} · Retrieved {new Date(source.retrievedAt).toLocaleDateString()}</Text>
+          </Pressable>
+        ))}
         {card.provenance ? <Text style={styles.sourceLicense}>Model: {card.provenance.modelId}</Text> : null}
       </View>
 
@@ -503,42 +616,70 @@ function InterestsScreen({
         </Pressable>
       ) : (
         <Pressable accessibilityRole="button" disabled={saving} onPress={onCancel} style={({ pressed }) => [styles.skipButton, pressed && styles.pressed]}>
-          <Text style={styles.skipButtonText}>Back to feed</Text>
+          <Text style={styles.skipButtonText}>Back to settings</Text>
         </Pressable>
       )}
     </ScrollView>
   );
 }
 
-function AnalyticsScreen({ snapshot, selected, onSelect, backendStatus, onRetry, retryLabel }: {
+function SettingsScreen({ onOpenInterests, backendStatus, unread, onRefresh }: {
+  onOpenInterests: () => void;
+  backendStatus: BackendStatus;
+  unread: number;
+  onRefresh: () => void;
+}) {
+  const connected = backendStatus.connection === 'connected';
+  const lastConnected = backendStatus.lastHandshakeAt
+    ? new Date(backendStatus.lastHandshakeAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : null;
+
+  return (
+    <View style={styles.settingsRoot}>
+      <ScrollView style={styles.scrollView} contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
+        <Text style={styles.pageTitle}>Settings</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Topics, choose interests and configure backend connection" onPress={onOpenInterests} style={({ pressed }) => [styles.settingsOption, pressed && styles.pressed]}>
+          <View style={styles.settingsOptionCopy}>
+            <Text style={styles.settingsOptionTitle}>Topics</Text>
+            <Text style={styles.settingsOptionHint}>Your interests and backend connection</Text>
+          </View>
+          <Text style={styles.settingsOptionArrow}>›</Text>
+        </Pressable>
+      </ScrollView>
+      <View style={styles.connectionPanel}>
+        <View accessible accessibilityLabel={connected ? 'Backend connected' : backendStatus.connection === 'disabled' ? 'Backend not configured' : 'Backend disconnected'} style={[styles.connectionGlow, connected ? styles.connectionGlowConnected : styles.connectionGlowOffline]}>
+          <View style={[styles.connectionDot, connected ? styles.connectionDotConnected : styles.connectionDotOffline]} />
+        </View>
+        <View style={styles.connectionPill} accessible accessibilityLabel={backendStatus.lastHandshakeAt ? `Last successful connection ${new Date(backendStatus.lastHandshakeAt).toLocaleString()}` : 'No successful connection yet'}>
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2} style={styles.connectionPillText}>{lastConnected ? `Last ${lastConnected}` : 'Never connected'}</Text>
+        </View>
+        <View style={styles.connectionPill} accessible accessibilityLabel={`${unread} unread cards saved locally`}>
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2} style={styles.connectionPillText}>{unread} unread</Text>
+        </View>
+        <Pressable accessibilityRole="button" accessibilityLabel="Refresh backend connection and cards" onPress={onRefresh} style={({ pressed }) => [styles.connectionRefresh, pressed && styles.pressed]}>
+          <Svg width={20} height={20} viewBox="0 0 24 24" accessible={false}>
+            <Path d="M3 12a9 9 0 0 1 15.36-6.36L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.36 6.36L3 16M8 16H3v5" fill="none" stroke={colors.accent} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+          </Svg>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function AnalyticsScreen({ snapshot, selected, onSelect }: {
   snapshot: AnalyticsSnapshot | null;
   selected: AnalyticsMetric;
   onSelect: (metric: AnalyticsMetric) => void;
-  backendStatus: BackendStatus | null;
-  onRetry: () => void;
-  retryLabel: string;
 }) {
   const maxValue = useMemo(() => Math.max(1, ...topics.map((topic) => snapshot?.byTopic[selected][topic.id] ?? 0)), [selected, snapshot]);
+  const metricSwipeStart = useRef({ x: 0, y: 0, at: 0 });
+  const metricSwipeCaptured = useRef(false);
+  const swipeMetrics: AnalyticsMetric[] = ['seen', 'expanded', 'favorites'];
 
   return (
     <ScrollView style={styles.scrollView} contentContainerStyle={styles.analyticsContent} showsVerticalScrollIndicator={false}>
       <Text style={styles.pageTitle}>Your learning</Text>
       <Text style={styles.analyticsSubtitle}>A snapshot of the ideas you’ve explored across all time.</Text>
-
-      {backendStatus ? <View style={styles.backendBanner} accessibilityLiveRegion="polite">
-        <View style={{ flex: 1 }}>
-          <View style={styles.connectionRow}>
-            <View style={[styles.connectionDot, backendStatus.connection === 'connected' ? styles.connectionDotConnected : backendStatus.connection === 'offline' ? styles.connectionDotOffline : backendStatus.connection === 'checking' ? styles.connectionDotChecking : styles.connectionDotDisabled]} />
-            <Text style={styles.providerNoticeText}>
-              {backendStatus.connection === 'connected' ? 'Connected to backend' : backendStatus.connection === 'checking' ? 'Checking backend…' : backendStatus.connection === 'offline' ? 'Not connected to backend' : 'Backend not configured'}
-              {backendStatus.lastHandshakeAt ? ` · checked ${new Date(backendStatus.lastHandshakeAt).toLocaleTimeString()}` : ''}
-            </Text>
-          </View>
-          <Text style={styles.reviewHint}>{backendStatus.unread} unread · {backendStatus.provider ?? 'Backend'}{backendStatus.model ? ` / ${backendStatus.model}` : ''}</Text>
-          <Text style={styles.reviewHint}>{backendStatus.connection === 'offline' ? backendStatus.connectionMessage : backendStatus.message}{backendStatus.unread < 50 ? ' Your offline supply is below 50.' : ''}</Text>
-        </View>
-        <ActionButton compact label={retryLabel} onPress={onRetry} />
-      </View> : null}
 
       <View style={styles.statRow}>
         {(['seen', 'expanded', 'favorites'] as AnalyticsMetric[]).map((metric) => (
@@ -566,53 +707,152 @@ function AnalyticsScreen({ snapshot, selected, onSelect, backendStatus, onRetry,
         })}
       </View>
 
-      <View style={styles.chartHeader}>
-        <Text style={styles.chartTitle}>{metricLabels[selected]} by topic</Text>
-        <Text style={styles.chartCaption}>UNIQUE CARDS · PRIMARY TOPIC · ALL TIME</Text>
-      </View>
-      {snapshot?.totals[selected] === 0 ? (
-        <Text style={styles.chartFootnote} accessibilityLiveRegion="polite">
-          {selected === 'seen' ? 'Read a card in the Feed to start your chart.'
-            : selected === 'expanded' ? 'Swipe left on a card to explore an idea.'
-              : 'Save a card with the heart to see your favorites here.'}
-        </Text>
-      ) : null}
-      <View style={styles.chart}>
-        {topics.map((topic) => {
-          const value = snapshot?.byTopic[selected][topic.id] ?? 0;
-          const fill = value === 0 ? 0 : Math.max(4, (value / maxValue) * 100);
-          return (
-            <View key={topic.id} style={styles.chartRow} accessible accessibilityLabel={`${topic.name}: ${value} ${metricLabels[selected].toLowerCase()} cards`}>
-              <Text style={[styles.chartTopic, { color: topicColor(topic.id) }]}>{topic.name}</Text>
-              <View style={styles.barTrack}>
-                <View style={[styles.bar, { width: `${fill}%`, backgroundColor: topicColor(topic.id) }]} />
+      <View
+        onTouchStart={(event) => {
+          metricSwipeStart.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY, at: Date.now() };
+          metricSwipeCaptured.current = false;
+        }}
+        onMoveShouldSetResponderCapture={(event) => {
+          const deltaX = event.nativeEvent.pageX - metricSwipeStart.current.x;
+          const deltaY = event.nativeEvent.pageY - metricSwipeStart.current.y;
+          const horizontal = Math.abs(deltaX) > 16 && Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
+          if (horizontal) metricSwipeCaptured.current = true;
+          return horizontal;
+        }}
+        onResponderRelease={(event) => {
+          const deltaX = event.nativeEvent.pageX - metricSwipeStart.current.x;
+          const deltaY = event.nativeEvent.pageY - metricSwipeStart.current.y;
+          const elapsed = Math.max(1, Date.now() - metricSwipeStart.current.at);
+          const quickSwipe = Math.abs(deltaX) >= 16 && Math.abs(deltaX) / elapsed >= 0.45;
+          if (metricSwipeCaptured.current && Math.abs(deltaY) < Math.abs(deltaX) / 1.15 && (Math.abs(deltaX) >= 36 || quickSwipe)) {
+            const index = swipeMetrics.indexOf(selected);
+            const nextIndex = Math.max(0, Math.min(swipeMetrics.length - 1, index + (deltaX < 0 ? 1 : -1)));
+            if (nextIndex !== index) onSelect(swipeMetrics[nextIndex]);
+          }
+          metricSwipeCaptured.current = false;
+        }}
+        onResponderTerminate={() => { metricSwipeCaptured.current = false; }}
+        onResponderTerminationRequest={() => false}
+      >
+        <View style={styles.chartHeader}>
+          <Text style={styles.chartTitle}>{metricLabels[selected]} by topic</Text>
+          <Text style={styles.chartCaption}>UNIQUE CARDS · PRIMARY TOPIC · ALL TIME</Text>
+        </View>
+        {snapshot?.totals[selected] === 0 ? (
+          <Text style={styles.chartFootnote} accessibilityLiveRegion="polite">
+            {selected === 'seen' ? 'Read a card in the Feed to start your chart.'
+              : selected === 'expanded' ? 'Swipe left on a card to explore an idea.'
+                : 'Save a card with the heart to see your favorites here.'}
+          </Text>
+        ) : null}
+        <View style={styles.chart}>
+          {topics.map((topic) => {
+            const value = snapshot?.byTopic[selected][topic.id] ?? 0;
+            const fill = value === 0 ? 0 : Math.max(4, (value / maxValue) * 100);
+            return (
+              <View key={topic.id} style={styles.chartRow} accessible accessibilityLabel={`${topic.name}: ${value} ${metricLabels[selected].toLowerCase()} cards`}>
+                <Text style={[styles.chartTopic, { color: topicColor(topic.id) }]}>{topic.name}</Text>
+                <View style={styles.barTrack}>
+                  <View style={[styles.bar, { width: `${fill}%`, backgroundColor: topicColor(topic.id) }]} />
+                </View>
+                <Text style={styles.chartValue}>{value}</Text>
               </View>
-              <Text style={styles.chartValue}>{value}</Text>
-            </View>
-          );
-        })}
+            );
+          })}
+        </View>
+        <Text style={styles.chartFootnote}>Seen and Expanded count each card once, under its primary topic. Favorites shows cards currently saved.</Text>
       </View>
-      <Text style={styles.chartFootnote}>Seen and Expanded count each card once, under its primary topic. Favorites shows cards currently saved.</Text>
     </ScrollView>
   );
 }
 
-function FavoritesScreen({ cards, onOpen, onFavorite, onFeed }: { cards: Card[]; onOpen: (card: Card) => void; onFavorite: (card: Card) => void; onFeed: () => void }) {
+function FavoritesScreen({ cards, onOpen, onFavorite }: { cards: Card[]; onOpen: (card: Card) => void; onFavorite: (card: Card) => Promise<boolean> }) {
   const favorites = cards.filter(c => c.isFavorite).sort((a,b) => (b.savedAt ?? '').localeCompare(a.savedAt ?? '') || a.id.localeCompare(b.id));
-  return <ScrollView style={styles.scrollView} contentContainerStyle={styles.analyticsContent}>
-    <Text style={styles.pageTitle}>Favorites</Text><Text style={styles.analyticsSubtitle}>Saved ideas, available offline.</Text>
-    {!favorites.length ? <><Text style={styles.emptyText}>Tap a card’s heart to keep it here.</Text><ActionButton label="Back to feed" onPress={onFeed} /></> : favorites.map(card => <View key={card.id} style={styles.generatorPanel}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`Read ${card.title}`} onPress={() => onOpen(card)}>
-        <Text style={[styles.cardTopic, { color: topicColor(card.primaryTopicId) }]}>{topicName(card.primaryTopicId)}</Text><Text style={styles.reviewTitle}>{card.title}</Text><Text numberOfLines={3} style={styles.emptyText}>{card.summary}</Text>
-      </Pressable><ActionButton compact label="Remove favorite" onPress={() => onFavorite(card)} />
-    </View>)}
-  </ScrollView>;
+  const isEmpty = favorites.length === 0;
+  return (
+    <ScrollView style={styles.scrollView} contentContainerStyle={[styles.analyticsContent, isEmpty && styles.favoritesEmptyContent]}>
+      <Text style={styles.pageTitle}>Favorites</Text>
+      <Text style={styles.analyticsSubtitle}>Saved ideas, available offline.</Text>
+      {isEmpty ? (
+        <View style={styles.favoritesEmptyState}>
+          <View style={styles.favoritesEmptyIcon}>
+            <HeartIcon size={42} filled={false} color={colors.accent} />
+          </View>
+          <Text style={styles.emptyTitle}>No favorites yet</Text>
+          <Text style={[styles.emptyText, styles.favoritesEmptyHint]}>Tap a card’s heart to keep it here.</Text>
+        </View>
+      ) : favorites.map(card => (
+        <FavoriteCardItem key={card.id} card={card} onOpen={onOpen} onRemove={onFavorite} />
+      ))}
+    </ScrollView>
+  );
+}
+
+function FavoriteCardItem({ card, onOpen, onRemove }: { card: Card; onOpen: (card: Card) => void; onRemove: (card: Card) => Promise<boolean> }) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const opacity = useRef(new Animated.Value(1)).current;
+  const removing = useRef(false);
+  const [isFavorite, setIsFavorite] = useState(true);
+
+  const restore = () => {
+    removing.current = false;
+    translateX.setValue(0);
+    opacity.setValue(1);
+    setIsFavorite(true);
+  };
+
+  const removeFavorite = () => {
+    if (removing.current) return;
+    removing.current = true;
+    setIsFavorite(false);
+    Animated.parallel([
+      Animated.timing(translateX, {
+        toValue: Dimensions.get('window').width + 40,
+        duration: 260,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(opacity, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (!finished) { restore(); return; }
+      void onRemove(card).then((removed) => { if (!removed) restore(); }).catch(restore);
+    });
+  };
+
+  return (
+    <Animated.View style={[styles.favoritesCard, { opacity, transform: [{ translateX }] }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Read ${card.title}`} onPress={() => {
+        if (!removing.current) onOpen(card);
+      }}>
+        <Text style={[styles.cardTopic, { color: topicColor(card.primaryTopicId) }]}>{topicName(card.primaryTopicId)}</Text>
+        <Text style={styles.reviewTitle}>{card.title}</Text>
+        <Text numberOfLines={3} style={styles.emptyText}>{card.summary}</Text>
+      </Pressable>
+      <View style={styles.favoritesCardFooter}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${card.title} from favorites`}
+          accessibilityState={{ selected: isFavorite }}
+          onPress={removeFavorite}
+          style={({ pressed }) => [styles.favoritesHeartButton, pressed && styles.pressed]}
+        >
+          <HeartIcon size={24} filled={isFavorite} color={isFavorite ? colors.accent : colors.muted} />
+        </Pressable>
+      </View>
+    </Animated.View>
+  );
 }
 function BottomNavigation({ active, onChange }: { active: Tab; onChange: (tab: Tab) => void }) {
   const items: { id: Tab; label: string; glyph: string }[] = [
     { id: 'feed', label: 'Feed', glyph: '▤' },
     { id: 'favorites', label: 'Favorites', glyph: '' },
     { id: 'analytics', label: 'Analytics', glyph: '▥' },
+    { id: 'settings', label: 'Settings', glyph: '' },
   ];
   return (
     <View style={styles.bottomNav}>
@@ -626,7 +866,12 @@ function BottomNavigation({ active, onChange }: { active: Tab; onChange: (tab: T
             onPress={() => onChange(item.id)}
             style={({ pressed }) => [styles.navItem, pressed && styles.pressed]}
           >
-            {item.id === 'favorites' ? <HeartIcon size={22} filled={selected} color={selected ? colors.accent : colors.muted} /> : <Text style={[styles.navGlyph, selected && styles.navSelected]}>{item.glyph}</Text>}
+            {item.id === 'favorites' ? <HeartIcon size={22} filled={selected} color={selected ? colors.accent : colors.muted} /> : item.id === 'settings' ? (
+              <Svg width={22} height={22} viewBox="0 0 24 24" accessible={false}>
+                <Path d="m9 3-.6 2.4-2 .9-2.2-.7-2 3.4 1.6 1.7v2.6L2.2 15l2 3.4 2.2-.7 2 .9L9 21h4l.6-2.4 2-.9 2.2.7 2-3.4-1.6-1.7v-2.6L19.8 9l-2-3.4-2.2.7-2-.9L13 3Z" fill="none" stroke={selected ? colors.accent : colors.muted} strokeWidth={1.6} strokeLinejoin="round" />
+                <Circle cx={11} cy={12} r={3} fill="none" stroke={selected ? colors.accent : colors.muted} strokeWidth={1.6} />
+              </Svg>
+            ) : <Text style={[styles.navGlyph, selected && styles.navSelected]}>{item.glyph}</Text>}
             <Text style={[styles.navLabel, selected && styles.navSelected]}>{item.label}</Text>
           </Pressable>
         );
@@ -756,15 +1001,15 @@ export default function App() {
     syncRef.current?.request();
   }, [refreshLocalData]);
 
-  const handleFavorite = useCallback((card: Card) => {
-    void (async () => {
-      try {
-        await setFavorite(card.id, !card.isFavorite);
-        await refreshAfterAction();
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : 'That favorite could not be saved.');
-      }
-    })();
+  const handleFavorite = useCallback(async (card: Card): Promise<boolean> => {
+    try {
+      await setFavorite(card.id, !card.isFavorite);
+      await refreshAfterAction();
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'That favorite could not be saved.');
+      return false;
+    }
   }, [refreshAfterAction]);
 
   const openDetails = useCallback((card: Card) => {
@@ -803,6 +1048,7 @@ export default function App() {
   const openInterests = useCallback(() => {
     setInterestDraft(interests);
     setFirstLaunch(false);
+    setTab('settings');
     setView('interests');
   }, [interests]);
 
@@ -817,6 +1063,7 @@ export default function App() {
       setInterests(normalized);
       setInterestDraft(normalized);
       await refreshLocalData();
+      setDiscoveryNotice(null);
       setFirstLaunch(false);
       setView('main');
       setError(null);
@@ -830,27 +1077,25 @@ export default function App() {
   const discoverCard = useCallback(async () => {
     if (discoveryBusy) return;
     if (!backendSettings.enabled || !syncRef.current) {
-      setInterestDraft(interests);
-      setView('interests');
-      setDiscoveryNotice({ kind: 'offline', message: 'Connect your Gemini backend in Topics to create new cards. Saved cards remain available offline.' });
+      setDiscoveryNotice({ kind: 'offline', state: 'disabled', message: 'Connect your Gemini backend in Settings → Topics to request more cards. Saved cards remain available offline.' });
       return;
     }
     setDiscoveryBusy(true);
     setDiscoveryNotice(null);
     try {
       const before = new Set(cards.map(card => card.id));
-      await syncRef.current.refresh();
+      const status = await syncRef.current.refresh();
       const refreshed = await refreshLocalData();
-      const added = refreshed.find(card => !before.has(card.id));
+      const added = refreshed.filter(card => !before.has(card.id)).length;
       setDiscoveryNotice(added
-        ? { kind: 'success', message: `Added “${added.title}” from Gemini. It is saved on this device and has not been independently verified.` }
-        : null);
+        ? { kind: 'success', state: status.state, added, message: `Added ${added} new card${added === 1 ? '' : 's'}. They’re saved on this device and have not been independently verified.` }
+        : { kind: status.connection === 'offline' || status.state === 'offline' ? 'error' : 'success', state: status.state, message: status.message });
     } catch {
-      setDiscoveryNotice({ kind: 'error', message: 'Could not reach Gemini right now. Your saved cards remain available offline.' });
+      setDiscoveryNotice({ kind: 'error', state: 'offline', message: 'Could not reach the backend right now. Your saved cards remain available offline.' });
     } finally {
       setDiscoveryBusy(false);
     }
-  }, [backendSettings.enabled, cards, discoveryBusy, interests, refreshLocalData]);
+  }, [backendSettings.enabled, cards, discoveryBusy, refreshLocalData]);
 
   const refreshFeed = useCallback(async () => {
     if (refreshingFeed || discoveryBusy) return;
@@ -859,7 +1104,7 @@ export default function App() {
     try {
       await refreshLocalData();
       if (backendSettings.enabled && syncRef.current) await syncRef.current.refresh();
-      else setDiscoveryNotice({ kind: 'offline', message: 'Connect your Gemini backend in Topics to create new cards. Saved cards remain available offline.' });
+      else setDiscoveryNotice({ kind: 'offline', message: 'Connect your Gemini backend in Settings → Topics to create new cards. Saved cards remain available offline.' });
     } catch {
       setDiscoveryNotice({ kind: 'offline', message: 'Could not refresh right now. Saved cards remain available.' });
     } finally { setRefreshingFeed(false); }
@@ -893,24 +1138,32 @@ export default function App() {
                     active={view === 'main' && tab === 'feed'}
                     discoveryBusy={discoveryBusy}
                     geminiEnabled={backendSettings.enabled}
-                    discoveryNotice={discoveryNotice}
                     onFavorite={handleFavorite}
                     onOpenDetails={openDetails}
                     onSeen={handleSeen}
-                    onOpenInterests={openInterests}
+                    onOpenSettings={() => setTab('settings')}
                     onDiscover={discoverCard}
                     refreshing={refreshingFeed}
                     onRefresh={() => void refreshFeed()}
                   />
+                  {view === 'main' && tab === 'feed' && discoveryNotice ? (
+                    <FloatingDiscoveryToast
+                      notice={discoveryNotice}
+                      reducedMotion={reducedMotion}
+                      onDismiss={() => setDiscoveryNotice(current => current === discoveryNotice ? null : current)}
+                    />
+                  ) : null}
                 </View>
                 <View style={[styles.mainPane, tab !== 'favorites' && styles.hiddenPane]}>
-                  <FavoritesScreen cards={cards} onOpen={openDetails} onFavorite={handleFavorite} onFeed={() => setTab('feed')} />
+                  <FavoritesScreen cards={cards} onOpen={openDetails} onFavorite={handleFavorite} />
                 </View>
                 <View style={[styles.mainPane, tab !== 'analytics' && styles.hiddenPane]}>
-                  <AnalyticsScreen snapshot={analytics} selected={metric} onSelect={setMetric}
-                    backendStatus={backendSettings.enabled || backendSettings.pairingToken.length >= 32 ? backendStatus : null}
-                    onRetry={() => backendSettings.enabled ? syncRef.current?.retry() : void syncRef.current?.handshake().catch(() => {})}
-                    retryLabel={backendSettings.enabled ? 'Retry' : 'Check'} />
+                  <AnalyticsScreen snapshot={analytics} selected={metric} onSelect={setMetric} />
+                </View>
+                <View style={[styles.mainPane, tab !== 'settings' && styles.hiddenPane]}>
+                  <SettingsScreen onOpenInterests={openInterests} backendStatus={backendStatus}
+                    unread={cards.filter(card => !card.isRead).length}
+                    onRefresh={() => backendSettings.enabled ? syncRef.current?.retry() : void syncRef.current?.handshake().catch(() => {})} />
                 </View>
               </View>
 
@@ -952,13 +1205,23 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  backendBanner: { padding: 16, marginTop: 20, flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 18, backgroundColor: colors.surface },
-  connectionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  connectionDot: { width: 8, height: 8, borderRadius: 4 },
-  connectionDotConnected: { backgroundColor: '#74d6a0' },
-  connectionDotOffline: { backgroundColor: '#ef8278' },
-  connectionDotChecking: { backgroundColor: '#e6bd67' },
-  connectionDotDisabled: { backgroundColor: colors.muted },
+  settingsRoot: { flex: 1 },
+  settingsContent: { paddingHorizontal: 20, paddingTop: 32, paddingBottom: 24 },
+  settingsOption: { marginTop: 28, padding: 18, minHeight: 84, flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 18, backgroundColor: colors.surface },
+  settingsOptionCopy: { flex: 1 },
+  settingsOptionTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
+  settingsOptionHint: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 5 },
+  settingsOptionArrow: { color: colors.accent, fontSize: 28 },
+  connectionPanel: { height: 88, flexShrink: 0, marginHorizontal: 20, marginBottom: 16, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 18, backgroundColor: colors.surface },
+  connectionGlow: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  connectionGlowConnected: { backgroundColor: '#74d6a025' },
+  connectionGlowOffline: { backgroundColor: '#ef827825' },
+  connectionDot: { width: 10, height: 10, borderRadius: 5 },
+  connectionDotConnected: { backgroundColor: '#74d6a0', boxShadow: '0 0 9px 2px #74d6a080' },
+  connectionDotOffline: { backgroundColor: '#ef8278', boxShadow: '0 0 9px 2px #ef827880' },
+  connectionPill: { flex: 1, minWidth: 0, height: 34, borderRadius: 17, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceRaised },
+  connectionPillText: { color: colors.text, fontSize: 11, fontVariant: ['tabular-nums'] },
+  connectionRefresh: { width: 44, height: 44, flexShrink: 0, borderRadius: 22, borderWidth: 1, borderColor: '#c8f45a30', alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentDim },
   safeArea: { flex: 1, backgroundColor: colors.background },
   screen: { flex: 1, backgroundColor: colors.background },
   loadingScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background, gap: 16 },
@@ -973,6 +1236,10 @@ const styles = StyleSheet.create({
   detailContent: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 34 },
   readerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 5, elevation: 5 },
   analyticsContent: { paddingHorizontal: 20, paddingTop: 32, paddingBottom: 28 },
+  favoritesEmptyContent: { flexGrow: 1 },
+  favoritesEmptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 },
+  favoritesEmptyIcon: { width: 84, height: 84, alignItems: 'center', justifyContent: 'center', borderRadius: 42, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, marginBottom: 20 },
+  favoritesEmptyHint: { textAlign: 'center' },
   interestsContent: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 50, paddingBottom: 34, justifyContent: 'center' },
   feedHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   feedHeaderFixed: { position: 'absolute', top: 8, left: 24, right: 24, zIndex: 3, elevation: 3 },
@@ -980,15 +1247,14 @@ const styles = StyleSheet.create({
   eyebrow: { color: colors.accent, fontSize: 11, fontWeight: '800', letterSpacing: 4, marginBottom: 9 },
   feedEyebrow: { marginBottom: 0 },
   pageTitle: { color: colors.text, fontSize: 29, fontWeight: '700', letterSpacing: -1.1 },
-  topicsButton: { borderWidth: 1, borderColor: colors.border, borderRadius: 999, minHeight: 42, paddingHorizontal: 15, alignItems: 'center', justifyContent: 'center' },
-  topicsButtonText: { color: colors.text, fontSize: 12, fontWeight: '600' },
   discoverButton: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 68, backgroundColor: colors.accent, borderRadius: 18, paddingHorizontal: 16, marginBottom: 18 },
   discoverGlyph: { color: colors.background, fontSize: 28, fontWeight: '400' },
   discoverCopy: { flex: 1 },
   discoverTitle: { color: colors.background, fontSize: 14, fontWeight: '800' },
   discoverSubtitle: { color: '#263514', fontSize: 11, marginTop: 3 },
   discoverArrow: { color: colors.background, fontSize: 26, fontWeight: '400' },
-  providerNotice: { backgroundColor: colors.surfaceRaised, borderColor: colors.border, borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 14 },
+  discoveryToast: { position: 'absolute', left: 20, right: 20, bottom: 20, zIndex: 4, elevation: 4 },
+  providerNotice: { backgroundColor: colors.surfaceRaised, borderColor: colors.border, borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12 },
   providerNoticeOffline: { borderColor: '#62413a', backgroundColor: colors.danger },
   providerNoticeText: { color: colors.text, fontSize: 12, lineHeight: 18 },
   card: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: 24, paddingTop: 30, paddingBottom: 14, justifyContent: 'space-between' },
@@ -1052,6 +1318,9 @@ const styles = StyleSheet.create({
   skipButton: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 9 },
   skipButtonText: { color: colors.muted, fontSize: 12, fontWeight: '600' },
   generatorPanel: { marginTop: 26, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 20, gap: 10 },
+  favoritesCard: { marginTop: 26, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 20 },
+  favoritesCardFooter: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 5 },
+  favoritesHeartButton: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
   serviceInput: { color: colors.text, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, minHeight: 48 },
   analyticsSubtitle: { color: '#c6cbc7', fontSize: 16, lineHeight: 24, marginTop: 8, maxWidth: 330 },
   statRow: { flexDirection: 'row', gap: 9, marginTop: 23 },

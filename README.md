@@ -4,9 +4,23 @@ JigyaByte is a local-first Android app for quick, memorable discoveries. Its fee
 
 ## How new cards are made
 
-The Gemini API is the only content-generation provider. A PC backend sends a structured prompt to Gemini and syncs the resulting cards to the phone. The app does not fetch Wikipedia or use a local model. Gemini cards have no live references and are labeled unverified; check important claims independently. The Gemini API key stays in the ignored `backend/.env` file and never goes on the phone.
+The Gemini API is the only content-generation provider. A PC backend batches cards and syncs them to the phone. Free public feeds and endpoints provide recent news with source links and dates saved alongside those cards; evergreen cards use model knowledge. All cards remain AI-generated and unverified. The Gemini key stays in ignored `backend/.env` and never goes on the phone. Generation randomly balances the 20 topics and caches surplus to reduce daily requests.
 
-The backend is optional for reading. Cards already saved in the app stay available offline, but creating more cards requires the backend to be running and paired with the app. To connect, open **Topics → Backend connection**, enable automatic refill, set the PC's private LAN address (or use USB forwarding), enter `BACKEND_DEVICE_TOKEN`, and save. See [backend/README.md](backend/README.md) for setup and retry details.
+The backend is optional for reading. Cards already saved in the app stay available offline, but creating more cards requires the backend to be running and paired with the app. To connect, open **Settings → Topics → Backend connection**, enable automatic refill, set the PC's private LAN address (or use USB forwarding), enter `BACKEND_DEVICE_TOKEN`, and save. Settings has a fixed-size bottom panel with a glowing connection indicator, last successful connection time, local unread count and refresh button. See [backend/README.md](backend/README.md) for setup and retry details.
+
+## Run the app and backend together
+
+They use separate ports: Expo/Metro uses `8081`, and the backend uses `4319` (`BACKEND_PORT` in `backend/.env`). Start each in its own terminal from the project root:
+
+```powershell
+# Terminal 1: Expo app
+npm start
+
+# Terminal 2: backend API
+npm run backend
+```
+
+Keep both terminals open while developing. For a phone on Wi-Fi, set `BACKEND_HOST` to the PC's private Wi-Fi IPv4 address and connect the phone to `http://<PC-Wi-Fi-IPv4>:4319`. For USB, run `adb reverse tcp:4319 tcp:4319` and use `http://127.0.0.1:4319` in the app. See [backend/README.md](backend/README.md) for backend setup.
 
 ## Build and install
 

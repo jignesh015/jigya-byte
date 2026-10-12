@@ -35,7 +35,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     costLimit: number('DAILY_COST_LIMIT', 0), requestCost: number('MAX_REQUEST_COST', 0),
     maxInput: integer('MAX_INPUT_TOKENS', 8000, 1, 100000), maxOutput: integer('MAX_OUTPUT_TOKENS', 4096, 128, 32000),
     unreadMin: integer('UNREAD_MIN', 50), refillAt: integer('UNREAD_REFILL_AT', 55), target: integer('UNREAD_TARGET', 60),
-    readLimit: integer('READ_NONFAVORITE_LIMIT', 30), batch: integer('GENERATION_BATCH_SIZE', 10, 1, 10),
+    readLimit: integer('READ_NONFAVORITE_LIMIT', 30), batch: integer('GENERATION_BATCH_SIZE', 30, 1, 60),
+    liveSources: env.LIVE_SOURCES_ENABLED === undefined ? true : boolean('LIVE_SOURCES_ENABLED'),
     concurrency: integer('MAX_CONCURRENT_JOBS', 1, 1, 4), cacheLimit: integer('MAX_CACHE_CARDS', 500, 1),
     timeout: integer('REQUEST_TIMEOUT_MS', 30000, 100, 60000),
   };
@@ -52,6 +53,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   return config;
 }
 export type Config = ReturnType<typeof readConfig>;
+
+// Leave room for JSON and reasoning; avoid requesting more cards than the output can hold.
+export function generationBatchSize(config: Config): number {
+  return Math.min(config.batch, Math.max(1, Math.floor((config.maxOutput - 512) / 350)));
+}
 
 // Only explicitly configured routes participate; adding a secret never enables spending.
 export function providerRoutes(config: Config): Config[] {

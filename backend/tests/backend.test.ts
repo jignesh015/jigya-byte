@@ -15,7 +15,7 @@ import { Worker } from '../src/jobs/worker.ts';
 import { createBackend } from '../src/server.ts';
 
 const token = randomBytes(32).toString('hex');
-const config = (extra: NodeJS.ProcessEnv = {}) => readConfig({ BACKEND_DEVICE_TOKEN: token, BACKEND_DATABASE: ':memory:', ...extra });
+const config = (extra: NodeJS.ProcessEnv = {}) => readConfig({ BACKEND_DEVICE_TOKEN: token, BACKEND_DATABASE: ':memory:', LIVE_SOURCES_ENABLED: 'false', ...extra });
 const liveConfig = (extra: NodeJS.ProcessEnv = {}) => config({ GENERATION_PROVIDER: 'gemini', GEMINI_API_KEY: randomBytes(24).toString('hex'), GEMINI_MODEL: 'mock-model', GEMINI_FREE_TIER_CONFIRMED: 'true', CONTENT_MODE: 'ai-only', ...extra });
 function inventory(unread = 0, version = 1): Snapshot {
   return snapshot({ protocolVersion: 1, deviceId: 'test-installation', inventoryVersion: version, snapshotComplete: true,
@@ -32,7 +32,7 @@ function seed(store: Store, count = 60) { store.addCards(Array.from({ length: co
 test('configuration rejects missing token, invalid ordering, and unapproved paid activation', () => {
   assert.throws(() => readConfig({}), /TOKEN/);
   assert.throws(() => config({ UNREAD_TARGET: '50' }), /ordering/);
-  assert.throws(() => config({ GENERATION_BATCH_SIZE: '11' }), /GENERATION_BATCH_SIZE/);
+  assert.throws(() => config({ GENERATION_BATCH_SIZE: '61' }), /GENERATION_BATCH_SIZE/);
   assert.throws(() => liveConfig({ GEMINI_FREE_TIER_CONFIRMED: 'false' }), /activation/);
   assert.throws(() => liveConfig({ GENERATION_PROVIDER: 'other' }), /Only Gemini/);
   assert.throws(() => config({ ALLOW_PAID_CALLS: 'yes' }), /Invalid/);
@@ -131,14 +131,14 @@ test('overload falls back once and successful cards identify the actual model', 
   assert.equal(JSON.parse(log.attempt_log).length, 2); store.close();
 });
 
-test('fallbacks stop at shared budgets and never follow credentials, validation or ambiguous errors', async () => {
+test('fallbacks respect shared budgets; credentials, refusal and invalid output do not retry', async () => {
   for (const code of ['upstream_unavailable', 'provider_credentials_or_access', 'provider_refused_or_incomplete', 'upstream_timeout_or_network', 'invalid_provider_output']) {
     const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', DAILY_REQUEST_LIMIT: '1' });
     const store = new Store(':memory:'); store.sync(inventory(), cfg); let fallbackCalls = 0;
     const worker = new Worker(cfg, store, async () => { throw new Failure(code); }, () => async () => { fallbackCalls++; return {}; });
     await worker.tick(); store.db.prepare('UPDATE jobs SET next_at=0').run(); await worker.tick();
     assert.equal(fallbackCalls, 0); assert.equal(store.usage().requests, 1);
-    assert.equal(store.jobs()[0].error, code === 'upstream_unavailable' ? 'budget_exhausted' : code); store.close();
+    assert.equal(store.jobs()[0].error, ['upstream_unavailable', 'upstream_timeout_or_network'].includes(code) ? 'budget_exhausted' : code); store.close();
   }
 });
 
@@ -190,17 +190,18 @@ test('worker generates ten cards in one call and reserves one request', async ()
   await worker.tick(); assert.equal(calls, 1); store.close();
 });
 
-test('a queued batch shrinks to the latest deficit without per-card calls', async () => {
+test('a small phone deficit fills a complete output-sized batch and caches the surplus', async () => {
   const store = new Store(':memory:'); const cfg = liveConfig();
   store.sync(inventory(55), cfg);
   store.sync(inventory(57, 2), cfg);
   let calls = 0;
   const worker = new Worker(cfg, store, async text => {
-    calls++; assert.match(text, /Prepare exactly 3 distinct English cards/);
-    return { cards: Array.from({ length: 3 }, (_, i) => ({ title: `Remaining word${i}`, summary: `Summary word${i}`, explanation: `Detail word${i}`, primaryTopicId: 'space', topicIds: ['space'] })) };
+    calls++; assert.match(text, /Prepare exactly 10 distinct English cards/);
+    return { cards: Array.from({ length: 10 }, (_, i) => ({ title: `Remaining word${i}`, summary: `Summary word${i}`, explanation: `Detail word${i}`, primaryTopicId: 'space', topicIds: ['space'] })) };
   });
   await worker.tick();
-  assert.equal(calls, 1); assert.equal(store.cards().length, 3); assert.equal(store.usage().requests, 1);
+  assert.equal(calls, 1); assert.equal(store.cards().length, 10); assert.equal(store.usage().requests, 1);
+  assert.equal(store.sync(inventory(57, 2), cfg).cards.length, 3);
   store.close();
 });
 test('cancelled demand and exhausted budgets make zero provider calls', async () => {

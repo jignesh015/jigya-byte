@@ -2,7 +2,7 @@
 
 Status: **superseded historical plan**. The user has since retired Wikipedia retrieval, all non-Gemini providers, and local-model generation. The current app generates cards only through Gemini via `backend/`; see `agent.md` and `backend/README.md` for the active policy. Do not implement the old provider/retrieval proposals below as current requirements. The plan was created 2026-10-10 and is retained only as background.
 
-Implementation update (historical): the original implementation supported source retrieval and multiple provider proposals. Those paths have now been removed. The current backend calls Gemini only, prompts for curiosity-first short facts and development tips, and marks cards unverified because it has no live reference source. Backend schema 6 removes cached source excerpts and invalidates old cache deliveries. Current setup and operation are documented in `backend/README.md`.
+Current update (2026-10-12): the user authorized free live sources and efficient batched generation. The backend now retrieves bounded public material from PIB, UN News, GDELT, GitHub releases and Steam announcements. Gemini remains the only generation provider; paid calls stay disabled. Schema 7 adds source caching and persisted distribution counts without a card/usage reset. See `backend/README.md`; the old multi-provider proposals below remain historical.
 
 ## Outcome and existing implementation
 

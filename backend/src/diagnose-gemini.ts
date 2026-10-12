@@ -1,11 +1,13 @@
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { readConfig } from './config.ts';
+import { readConfig, generationBatchSize } from './config.ts';
 import { Store } from './storage/store.ts';
 import { Failure, TOPICS } from './contracts/index.ts';
 import { cloudGenerator } from './providers/cloud.ts';
 import type { ProviderDiagnostic } from './providers/cloud.ts';
 import { outputSchema, prepare, prompt } from './preparation/cards.ts';
+import { distributedTopics } from './preparation/topics.ts';
+import { NEWS_TOPICS } from './sources/live.ts';
 
 // One bounded real preparation request, never an automatic retry loop.
 // Hold the backend port so this cannot race the running service or its worker.
@@ -19,13 +21,18 @@ await new Promise<void>((resolve, reject) => {
 let store: Store | undefined;
 try {
   store = new Store(config.database);
-  const topics = TOPICS.slice(0, config.batch);
-  const text = prompt(topics, store.cards().slice(-15).map(c => c.title));
-  if (Buffer.byteLength(text + JSON.stringify(outputSchema)) > config.maxInput) throw new Error('Diagnostic input exceeds the configured budget.');
+  // Isolate model availability from source availability, using random evergreen topics.
+  const topics = distributedTopics(TOPICS.filter(topic => !NEWS_TOPICS.includes(topic)), generationBatchSize(config), store.topicCounts());
+  const excluded = store.cards().slice(-15).map(c => c.title);
+  const inputLimit = Math.min(config.maxInput, config.tokenLimit - store.usage().tokens - config.maxOutput);
+  let text = prompt(topics, excluded);
+  while (Buffer.byteLength(text + JSON.stringify(outputSchema)) > inputLimit && topics.length > 1) { topics.pop(); text = prompt(topics, excluded); }
+  const inputBytes = Buffer.byteLength(text + JSON.stringify(outputSchema));
+  if (inputBytes > inputLimit) throw new Error('Diagnostic input exceeds the remaining configured budget.');
   const id = store.queue(`gemini-diagnostic-${randomUUID()}`, topics.length);
   let diagnostic: ProviderDiagnostic | undefined;
   try {
-    store.reserveBudget(store.job(id)!, config);
+    store.reserveBudget(store.job(id)!, config, inputBytes);
     const raw = await cloudGenerator(config)(text, value => {
       diagnostic = value;
       store!.db.prepare('UPDATE jobs SET diagnostics=? WHERE id=?').run(JSON.stringify(value), id);

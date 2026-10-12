@@ -1,11 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomInt } from 'node:crypto';
 import type { Card, History, Snapshot } from '../contracts/index.ts';
 import { Failure } from '../contracts/index.ts';
 import type { Config } from '../config.ts';
 import { nearDuplicate } from '../preparation/cards.ts';
+import { generationBatchSize } from '../config.ts';
+import { NEWS_TOPICS } from '../sources/live.ts';
 
 export type Job = { id: string; device_id: string; count: number; state: string; attempts: number; provider_index: number; diagnostics: string | null; next_at: number; error: string | null };
 export type Delivery = { id: string; device_id: string; version: number; cards: string; state: string; result: string | null };
@@ -16,7 +18,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 6) throw new Error('Unsupported backend database version');
+    if (version > 7) throw new Error('Unsupported backend database version');
     if (!version) this.db.exec(`BEGIN;
       CREATE TABLE cards(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, fingerprint TEXT UNIQUE NOT NULL, body TEXT NOT NULL);
       CREATE TABLE devices(id TEXT PRIMARY KEY, version INTEGER NOT NULL, snapshot TEXT NOT NULL);
@@ -43,6 +45,16 @@ export class Store {
       DROP TABLE IF EXISTS sources;
       PRAGMA user_version=6;
       COMMIT;`);
+    if (version < 7) this.db.exec(`BEGIN;
+      CREATE TABLE source_cache(key TEXT PRIMARY KEY, fetched_at INTEGER NOT NULL, body TEXT NOT NULL);
+      CREATE TABLE topic_generation(topic TEXT PRIMARY KEY, count INTEGER NOT NULL);
+      CREATE TABLE source_usage(id TEXT PRIMARY KEY);
+      PRAGMA user_version=7; COMMIT;`);
+    // Seed old cached topics once without touching cards or reservations.
+    const cached = this.cards();
+    for (const topic of new Set(cached.map(c => c.primaryTopicId))) this.db.prepare('INSERT OR IGNORE INTO topic_generation VALUES (?,?)').run(topic,
+      cached.filter(c => c.primaryTopicId === topic).length);
+    for (const source of cached.flatMap(card => card.sources)) this.db.prepare('INSERT OR IGNORE INTO source_usage VALUES (?)').run(source.id);
     // A crash after dispatch is ambiguous. Do not repeat a potentially charged request.
     this.db.prepare("UPDATE jobs SET state='uncertain', error='interrupted_request_requires_reconciliation' WHERE state='running'").run();
   }
@@ -61,6 +73,8 @@ export class Store {
         if (existing.length >= limit) break;
         if (existing.some(c => nearDuplicate(c, card))) continue;
         this.db.prepare('INSERT INTO cards VALUES (?,?,?,?)').run(card.id, card.contentHash, card.ideaFingerprint, JSON.stringify(card));
+        this.db.prepare('INSERT INTO topic_generation VALUES (?,1) ON CONFLICT(topic) DO UPDATE SET count=count+1').run(card.primaryTopicId);
+        for (const source of card.sources) this.db.prepare('INSERT OR IGNORE INTO source_usage VALUES (?)').run(source.id);
         existing.push(card); added++;
       }
     });
@@ -106,19 +120,46 @@ export class Store {
   markJob(id: string, state: string, error: string | null = null, next = 0) {
     this.db.prepare('UPDATE jobs SET state=?,error=?,next_at=? WHERE id=?').run(state, error, next, id);
   }
-  candidates(s: Snapshot): Card[] {
+  candidates(s: Snapshot, requireNewsSources = false): Card[] {
     const refs = [...s.retainedCards, ...this.histories(s.deviceId)];
-    return this.cards().filter(c => !refs.some(r => r.id === c.id || r.contentHash === c.contentHash || r.ideaFingerprint === c.ideaFingerprint));
+    const now = Date.now();
+    return this.cards().filter(c => (!requireNewsSources || !NEWS_TOPICS.includes(c.primaryTopicId) || c.sources.length > 0)
+      && !refs.some(r => r.id === c.id || r.contentHash === c.contentHash || r.ideaFingerprint === c.ideaFingerprint)
+      && (!c.sources.length || c.sources.every(source => now - Date.parse(source.publishedAt) <= 7 * 86400000)));
+  }
+  topicCounts(): Record<string, number> {
+    return Object.fromEntries((this.db.prepare('SELECT topic,count FROM topic_generation').all() as { topic: string; count: number }[]).map(r => [r.topic, r.count]));
+  }
+  usedSourceIds(): Set<string> {
+    return new Set((this.db.prepare('SELECT id FROM source_usage').all() as { id: string }[]).map(row => row.id));
+  }
+  expireNews(requireSources = false) {
+    // Delivery payloads are self-contained. Phone cards and history are untouched.
+    for (const card of this.cards()) if (card.sources.some(source => Date.now() - Date.parse(source.publishedAt) > 7 * 86400000)
+      || (requireSources && NEWS_TOPICS.includes(card.primaryTopicId) && !card.sources.length)) {
+      this.db.prepare('DELETE FROM cards WHERE id=?').run(card.id);
+    }
+  }
+  cachedSource(key: string): { fetchedAt: number; body: unknown } | null {
+    const row = this.db.prepare('SELECT fetched_at,body FROM source_cache WHERE key=?').get(key) as { fetched_at: number; body: string } | undefined;
+    return row ? { fetchedAt: row.fetched_at, body: JSON.parse(row.body) } : null;
+  }
+  cacheSource(key: string, body: unknown) {
+    this.db.prepare('DELETE FROM source_cache WHERE fetched_at<?').run(Date.now() - 14 * 86400000);
+    this.db.prepare('INSERT INTO source_cache VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET fetched_at=excluded.fetched_at,body=excluded.body').run(key, Date.now(), JSON.stringify(body));
   }
   sync(s: Snapshot, config: Config) {
     return this.transaction(() => {
       this.saveSnapshot(s);
+      this.expireNews(config.liveSources);
       let pending = this.pending(s.deviceId);
       if (s.counts.unread <= config.refillAt) this.db.prepare('UPDATE devices SET refilling=1 WHERE id=?').run(s.deviceId);
       if (s.counts.unread >= config.target) this.db.prepare('UPDATE devices SET refilling=0 WHERE id=?').run(s.deviceId);
       const deficit = this.isRefilling(s.deviceId) ? Math.max(0, config.target - s.counts.unread) : 0;
-      const candidates = this.candidates(s);
+      const candidates = this.candidates(s, config.liveSources);
       if (!pending && deficit) {
+        // Shuffle once, then persist the delivery so a lost response repeats identical cards.
+        for (let i = candidates.length - 1; i > 0; i--) { const j = randomInt(i + 1); [candidates[i], candidates[j]] = [candidates[j], candidates[i]]; }
         const cards = candidates.slice(0, Math.min(10, deficit));
         if (cards.length) {
           const id = randomUUID();
@@ -132,7 +173,7 @@ export class Store {
       // Unacknowledged delivery is a barrier: no unlimited generation while a device disappears.
       if (!pending && remaining && !job && candidates.length === 0 && config.provider !== 'disabled' && this.cards().length < config.cacheLimit) {
         const recent = this.db.prepare('SELECT error FROM jobs WHERE device_id=? ORDER BY rowid DESC LIMIT 1').get(s.deviceId) as { error: string | null } | undefined;
-        if (!recent?.error) job = this.job(this.queue(s.deviceId, Math.min(config.batch, remaining)));
+        if (!recent?.error) job = this.job(this.queue(s.deviceId, generationBatchSize(config)));
       }
       const last = this.jobs().find(j => j.device_id === s.deviceId);
       return { protocolVersion: 1, deliveryId: pending?.id ?? null, forInventoryVersion: pending?.version ?? s.inventoryVersion,
@@ -174,9 +215,10 @@ export class Store {
     const day = new Date().toISOString().slice(0, 10);
     return this.db.prepare('SELECT requests,tokens,cost FROM usage WHERE day=?').get(day) as { requests: number; tokens: number; cost: number } ?? { requests: 0, tokens: 0, cost: 0 };
   }
-  reserveBudget(job: Job, config: Config) {
+  reserveBudget(job: Job, config: Config, inputBytes = config.maxInput) {
     this.transaction(() => {
-      const use = this.usage(), tokens = config.maxInput + config.maxOutput, cost = config.paid ? config.requestCost : 0;
+      if (!Number.isSafeInteger(inputBytes) || inputBytes < 1 || inputBytes > config.maxInput) throw new Failure('input_budget_exceeded');
+      const use = this.usage(), tokens = inputBytes + config.maxOutput, cost = config.paid ? config.requestCost : 0;
       if (use.requests + 1 > config.requestLimit || use.tokens + tokens > config.tokenLimit || use.cost + cost > config.costLimit) throw new Failure('budget_exhausted');
       const day = new Date().toISOString().slice(0,10);
       this.db.prepare('INSERT INTO usage VALUES (?,?,?,?) ON CONFLICT(day) DO UPDATE SET requests=requests+excluded.requests,tokens=tokens+excluded.tokens,cost=cost+excluded.cost').run(day, 1, tokens, cost);

@@ -1,5 +1,43 @@
 # JigyaByte phone acceptance
 
+## Free live sources and randomized batch generation — 2026-10-12
+
+The backend now uses free public source adapters, dated references and output-sized batches. Both typechecks, app/data/HTTP integration tests, all 39 backend tests, publication audit and ARM64 APK build passed. The source-only probe retrieved 41 usable items: 33 current-affairs, seven AI/coding and one game announcement; GDELT timed out from this machine. No Gemini requests or usage changes were made. The updated APK is `artifacts/JigyaByte.apk`, SHA-256 `d44a656c2e1f350476482dbd37fd48afa402a30ece67b41cd6a2ecf188837246`. Build and fixture checks do not establish physical-device or live Gemini acceptance. Backend service remains user-started.
+
+- [ ] Install the updated APK; existing cards, favorites, interests and analytics survive.
+- [ ] Open sourced card details: source name, title, Published/Indexed date and retrieval date display; tapping opens the correct HTTPS article.
+- [ ] Disable the backend and restart the phone: saved card bodies and source metadata remain readable offline.
+- [ ] A small connected refill uses cached cards before generation; a new output-sized batch is generated only after cache exhaustion, then surplus feeds later refills.
+- [ ] Across several batches, generation spreads across available topics in random order without extra generation weight for selected interests. Feed review/interest lanes still work.
+- [ ] Disconnect public sources: news without fresh context is skipped and evergreen generation remains available.
+- [ ] Inspect authenticated status: daily caps, effective batch count and source failures are visible. Failures/retries never clear usage reservations.
+
+
+## Feed favorite burst — 2026-10-12
+
+New favorites emit ten small lime hearts, sparkles and dots plus a soft ring from the feed heart button, alongside its existing spring pulse. One native-driven progress value runs for 620ms; particle views exist only during the burst, ignore touches and are hidden from accessibility. Existing favorites do not celebrate on mount or return to Feed. Reduced motion disables the burst.
+
+Validation: app TypeScript, existing feed gesture regression checks, Git whitespace checks and the ARM64 release build passed. APK SHA-256: `ca583a6a7c803d6a1e91cf063e5b86506068ff40f3650e955d7628fcdc0c8a78`. No Android device was connected; animation appearance and frame timing remain pending phone review.
+
+- [ ] Tap an unsaved card's heart: confirm a short burst originates at the heart without changing feed position or covering navigation.
+- [ ] Double tap the card copy to favorite it: confirm the same burst at the heart button.
+- [ ] Remove a favorite, return to an existing favorite, and switch tabs: confirm no celebration for those actions.
+- [ ] Quickly favorite/unfavorite and swipe while the burst runs: confirm taps and paging remain responsive, with no lingering particles.
+- [ ] Enable Android reduced motion: confirm favorites still save with no burst or heart pulse.
+
+## Settings and connection panel — 2026-10-12
+
+Settings is the fourth navigation tab. Topics opens from Settings and returns there after saving or cancelling; the first-launch topic flow still leads to Feed. Analytics no longer contains the backend panel. Settings keeps an 88dp connection panel above navigation, outside its scrolling content, with a glowing green/red dot, last successful connection time, local unread count and circular two-arrow refresh icon. Pills stay single-line in fixed-height containers. Refresh retains the previous explicit failed/uncertain-job recovery behavior.
+
+Validation: TypeScript, feed gesture/data tests, fixture HTTP integration (including connection color stability, failed-check timestamp preservation and reconnection), Git whitespace checks and ARM64 release build passed. Integration used no live model calls. APK SHA-256: `ffc8d2c94630ef4ff6d317fd5bf2c4d48d3077b76e8808afa50efbc07503e131`. No Android device was connected for installation or visual acceptance; the checklist below remains pending.
+
+- [ ] Verify navigation order: Feed, Favorites, Analytics, Settings. Topics is absent from the Feed header.
+- [ ] Open Settings → Topics, save changes or cancel, and verify return to Settings. Confirm Feed position is preserved across navigation.
+- [ ] With a paired backend, confirm the dot stays green during checks every five seconds. Stop the backend: it turns red after a failed check and keeps the last successful time. Restart: it turns green after the next successful check.
+- [ ] Confirm the unread pill matches local unread card bodies after reading, importing and going offline, including with automatic refill disabled.
+- [ ] Verify the panel stays at the bottom above navigation and keeps its size through timestamp, count and connection changes. Check large Android text and a narrow display.
+- [ ] Verify the refreshed two-arrow icon is clear and its button retries/refills as before.
+
 ## Current Gemini-only card flow — 2026-10-11
 
 The old Wikipedia discovery and local Ollama generator have been removed. New cards are generated only by Gemini through the PC backend, with a curiosity-first prompt and an explicit unverified label. Backend schema 6 invalidates its previous card cache and drops cached source excerpts; app schema 7 removes the retired local-generator preference. The backend remains stopped at the user's request. No live Gemini call or phone acceptance was performed for this change.
@@ -89,3 +127,16 @@ Automated evidence is separate: version-3 migration preserves interests/favorite
 - 26 backend tests passed, covering actual fallback order, shared budgets, restart persistence, successful model attribution, terminal credential/refusal/output errors, ambiguous timeouts, and denial of uncertain OpenAI retries. Backend TypeScript check and Android/backend integration fixture passed. No live generation calls or OpenAI charges occurred.
 - Current live reservations remain 12 requests / 290,304 tokens / zero reserved monetary cost. Live fallback generation and new-card delivery remain unverified until the existing UTC daily request limit resets. Do not reset reservations to bypass this limit. No Android APK change was needed for server-side routing.
 
+
+## Sensitive Feed paging — 2026-10-12
+
+Feed vertical paging now has a single owner: the app responder. Native touch scrolling and page snapping are disabled; programmatic scrolling follows the drag and settles to one adjacent page. Upward/downward movement of 3 layout units commits a page, independent of speed and screen height. Taps and smaller jitter stay put. A downward pull of 64 units on the first page refreshes; imports still append without changing the current page. Returning from details restores the committed page, including when details were opened during a settle.
+
+Validation: TypeScript and the Feed gesture regression checks passed; data regression checks passed. The broader backend integration fixture failed at scripts/test-backend-integration.cjs:65, expecting one delivery-outbox record but receiving zero. That fixture does not exercise Feed gestures. Release APK built successfully at artifacts/JigyaByte.apk, SHA-256 abed81b7f01d86b3f5232d227af99d8d714e4ae7bff7e61a34b4416558c58f94. No ADB device was connected; installation and physical gesture acceptance remain pending.
+
+- [ ] Short, slow upward swipe from title, summary, footer and favorite control advances exactly one card without snapping back.
+- [ ] Long upward swipe and repeated quick swipes each advance one page; no skipped cards or partial resting positions.
+- [ ] Short downward swipe returns one card; first-page downward pull refreshes once and retains the current card.
+- [ ] Tap/double-tap/favorite and left-swipe details still work; returning restores the same page.
+- [ ] Last card advances to the end page; swiping there stays bounded; downward swipe returns.
+- [ ] Repeat with reduced motion and Android system-back gestures.

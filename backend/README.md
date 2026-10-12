@@ -1,10 +1,22 @@
 # JigyaByte backend
 
-The optional PC backend is the only path that creates new cards. It sends structured requests to the Gemini API and syncs cards to the phone's local SQLite library. It does not fetch Wikipedia or any other reference source, and it does not use a local or alternate model. Gemini-generated facts have no live citations and are unverified.
+The optional PC backend creates new cards with Gemini and syncs them to the phone's local SQLite library. Evergreen cards use model knowledge; news cards use recent material from free public endpoints. Gemini remains the only generation provider. AI summaries are unverified even when source links are attached.
 
 ## Card writing policy
 
 Cards should deliver a “Wow, I didn't know that!” moment, spark a question or reflection, or teach a practical game/software development technique. Lead with one memorable detail or useful move. Keep titles inviting, summaries to one sentence, and explanations to 2–4 short conversational sentences. Avoid textbook definitions, research-paper voice, filler and heavy jargon outside game and software development. Prefer well-established claims Gemini can state confidently. Never invent names, numbers, dates or explanations to make a card sound surprising. The app labels the result Gemini-generated and unverified.
+
+## Supported topics
+
+The original ten topics remain available. The expanded catalog adds Literature, Tech Tips, Game Industry Stories, AI Updates, Agentic Coding, Game Industry News, Indie Games, Current Affairs, General Knowledge, and Cinema (Bollywood & Hollywood). These participate in discovery rotation and can be selected as interests in the updated app. Each new topic has specific writing guidance, including actionable tips, established industry stories, uncommon general facts and cinema details from both industries.
+
+AI Updates, Game Industry News and Current Affairs require recent retrieved evidence when live sources are enabled (the default). Sources are PIB RSS plus up to three linked official releases, UN News RSS, GDELT Context snippets, a randomly chosen GitHub release repository, and two Steam announcement feeds (one broad/indie game and one frequently updated game). These require no paid API, search, grounding service or additional key. Only official Steam announcements are used. No general article scraping or paywall bypass is implemented.
+
+Responses, including failures, are cached for one hour and concurrent fetches are coalesced. Sources need at least 80 characters of context, a valid HTTPS link and a date within seven days; future dates beyond a five-minute clock allowance are rejected. Headline-only items are skipped. GDELT's observation date is labeled Indexed, not Published or an event date. Source outages skip affected news topics and continue evergreen generation. Endpoint status appears in authenticated `/v1/status`.
+
+Gemini receives bounded excerpts as untrusted data and may cite only supplied IDs. The backend attaches actual URLs/dates, rejects invented, mismatched or repeated references, and requires sources for news cards. The app saves references offline and shows clickable links in details. Cached news older than seven days is not offered to another device; phone cards and favorites remain readable. All summaries remain AI-generated and unverified.
+
+An updated app is needed to accept new topics and referenced cards. Existing installations seed additional topic rows without resetting cards, interests or history. Older builds reject unfamiliar IDs and nonempty references. New generation uses prompt version 5.
 
 ## Setup
 
@@ -28,26 +40,29 @@ For Android, set `BACKEND_HOST` to the PC's private Wi-Fi IPv4 address and conne
 
 ## Generation and recovery
 
-The backend generates up to ten distinct cards in one structured Gemini request, subject to current demand, cache capacity and request/token limits. The prompt excludes recent titles and asks for easy-to-digest, curiosity-first facts. The server validates structure and topic tags, deduplicates ideas, stores the actual Gemini model on each card, and syncs through durable deliveries.
+The backend fills an output-sized batch per request and caches surplus instead of spending a request on each small phone deficit. `GENERATION_BATCH_SIZE` defaults to 30 (maximum 60); the effective count is capped by `floor((MAX_OUTPUT_TOKENS - 512) / 350)`, minimum one. The current 8,192-token ceiling targets up to 21 cards/request; the 4,096-token example targets ten. This is an estimate, not a guarantee of provider output. Batches shrink to fit input limits, remaining daily tokens and cache space. Durable deliveries remain at most ten cards and the phone keeps its 60-unread target.
 
-The explicit Gemini fallback chain advances once from the primary to the configured fallback after a provider/model failure, including an ambiguous network timeout. Each attempt has its own reservation and bounded backoff. If the fallback also times out, the job remains uncertain for explicit Retry; Retry does not clear or reset usage. Provider refusals, bad credentials, quota exhaustion and upstream errors appear in backend status. The chain never calls a different provider.
+Topic selection randomly breaks ties among the least-generated available topics. Counts persist across requests and restarts, keeping coverage even without fixed rotation or interest weighting. The phone's discovery/interest/review lanes remain. Cached delivery cards are randomly selected once, then persisted unchanged for lost-response retries. News topics rejoin when fresh unused evidence is available.
 
-The example limits are ten requests/day and 50,000 reserved tokens/day. The current private setup uses a 15-request daily cap and 362,880 reserved tokens/day with a 16,000-byte conservative input bound and an 8,192-token output ceiling. These are local limits, separate from Google's own quotas. The daily usage ledger is persisted by UTC date and must not be reset to evade a limit.
+The explicit fallback chain advances once after quota, overload, network or model-configuration failures. Each attempt reserves a separate request. A timeout without another configured route stays uncertain for explicit Retry. Bad credentials, refusals, incomplete responses and malformed output fail without automatic retries to avoid wasting requests. Retry never resets usage and no alternate provider is called.
+
+The example limits are ten requests/day and 50,000 reserved tokens/day. The private setup retains its 15-request and 362,880-token caps, 16,000-byte input bound and 8,192-token output ceiling; paid calls stay disabled. Each reservation uses actual prompt/schema UTF-8 bytes as a conservative input-token bound plus the output limit sent to Gemini, rather than reserving unused input capacity. If remaining daily tokens cannot fit a full batch, both card count and requested output ceiling shrink. Valid cards from a partly bad response are retained without a repair request. Provider-reported usage stays in diagnostics; failures do not refund reservations. Google's quotas apply independently. The UTC ledger is never reset to evade a cap.
 
 ## Data and migrations
 
 The phone's SQLite database remains authoritative for its cards and user state. The backend stores a bounded card cache, delivery/job state, duplicate history, device snapshots and usage reservations.
 
-Backend database version 6 clears old cached card bodies and delivery payloads and drops the cached-source table once. It preserves duplicate/history records, jobs and every usage reservation. App database version 6 previously cleared the old card library; version 7 removes the retired local-generator setting while preserving current app state. The backend does not delete phone data.
+Backend database version 7 adds source caching, used-source IDs and topic-generation counts without clearing cards, deliveries, history, jobs or usage. Source-cache rows expire after 14 days. Backend versions 5–6 previously reset the retired cache. App schema stays version 7; references use existing columns, so no phone reset is needed.
 
 ## Checks and diagnostics
 
 ```powershell
 npm run backend:typecheck
 npm run backend:test
+npm --prefix backend run diagnose:sources
 npm --prefix backend run diagnose:gemini
 ```
 
-Type checks and automated tests use local or mocked data. `diagnose:gemini` is a real provider request and must only be run deliberately, within the configured budget, while the backend is stopped; it is not a way to bypass daily limits. `npm --prefix backend run prewarm` also makes provider requests when the cache is empty.
+Tests use local/mocked data. `diagnose:sources` fetches public sources into an in-memory database without environment secrets, Gemini requests or usage-ledger changes. A successful probe does not guarantee every endpoint is reachable. `diagnose:gemini` is a deliberate real provider request, within the configured budget while the backend is stopped. `prewarm` also makes provider requests when the cache is empty.
 
 The app remains readable when the backend or internet is unavailable. A successful TypeScript check or fixture test does not establish live Gemini availability, returned fact accuracy, or Android visual acceptance. See [../docs/manual-test.md](../docs/manual-test.md) for the current device checklist.

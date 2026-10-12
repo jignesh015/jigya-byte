@@ -32,12 +32,18 @@ function load(file) {
   const { readConfig }=await import('../backend/src/config.ts');
   const { Store }=await import('../backend/src/storage/store.ts');
   const { prepare }=await import('../backend/src/preparation/cards.ts');
+  const { TOPICS }=await import('../backend/src/contracts/index.ts');
   const { createBackend }=await import('../backend/src/server.ts');
   const token=randomBytes(32).toString('hex');
-  const config=readConfig({BACKEND_DEVICE_TOKEN:token,BACKEND_DATABASE:':memory:',GENERATION_PROVIDER:'gemini',GEMINI_API_KEY:'fixture-only',GEMINI_MODEL:'mock-model',GEMINI_FREE_TIER_CONFIRMED:'true'});
+  const config=readConfig({BACKEND_DEVICE_TOKEN:token,BACKEND_DATABASE:':memory:',GENERATION_PROVIDER:'gemini',GEMINI_API_KEY:'fixture-only',GEMINI_MODEL:'mock-model',GEMINI_FREE_TIER_CONFIRMED:'true',LIVE_SOURCES_ENABLED:'false'});
   const store=new Store(':memory:');
   const fixtureConfig={...config,mode:'ai-only',provider:'gemini',model:'mock-model'};
-  store.addCards(Array.from({length:100},(_,i)=>prepare({cards:[{title:`Idea unique${i}`,summary:`Summary unique${i}`,explanation:`Details unique${i}`,primaryTopicId:'space',topicIds:['space']}]},fixtureConfig,1)[0]),500);
+  const sourcedCards=Array.from({length:100},(_,i)=>{
+    const topic=TOPICS[i%TOPICS.length],date=new Date().toISOString();
+    const source={id:`fixture-source-${i}`,name:'Fixture source',title:`Source ${i}`,url:`https://example.org/news/${i}`,publishedAt:date,retrievedAt:date,dateKind:'published',topicIds:[topic],excerpt:'Fixture evidence, not a live article.'};
+    return prepare({cards:[{title:`Idea unique${i}`,summary:`Summary unique${i}`,explanation:`Details unique${i}`,primaryTopicId:topic,topicIds:[topic],sourceIds:[source.id]}]},fixtureConfig,1,[source])[0];
+  });
+  store.addCards(sourcedCards,500);
   const backend=createBackend(config,store); backend.worker.stopped=true;
   await new Promise(resolve=>backend.server.listen(0,'127.0.0.1',resolve));
   let sync;
@@ -46,7 +52,14 @@ function load(file) {
     const connection=load(path.resolve('src/data/backendConnection.ts'));
     const {BackendSync}=load(path.resolve('src/data/backendSync.ts'));
     await data.initializeDatabase(); assert.equal((await data.getCards()).length,0);
-    await data.importCards(require('./fixtures/cards.cjs').fixtureCards); await data.saveInterests(['space']);
+    const catalog=load(path.resolve('src/data/cardContent.ts'));
+    assert.deepEqual(catalog.topics.map(t=>t.id),TOPICS);
+    assert.equal(appDb.prepare('SELECT COUNT(*) n FROM topics').get().n,TOPICS.length);
+    const contracts=load(path.resolve('src/data/backendContracts.ts'));
+    for(const card of sourcedCards.slice(0,20)) assert.ok(await contracts.validateBackendCard(card));
+    assert.equal(await contracts.validateBackendCard({...sourcedCards[0],sources:[{...sourcedCards[0].sources[0],url:'https://127.0.0.1/secret'}]}),null);
+    await data.importCards(require('./fixtures/cards.cjs').fixtureCards); await data.saveInterests(['space','agentic-coding','cinema']);
+    assert.deepEqual(await data.getInterests(),['space','agentic-coding','cinema']);
     const originalQueue=await data.getPersistentFeed();
     assert.equal((await data.getInventory()).counts.unread,10);
     const url=`http://127.0.0.1:${backend.server.address().port}`;
@@ -65,6 +78,9 @@ function load(file) {
     await sync.run(); assert.equal(latestStatus.state,'offline'); assert.equal((await data.getDeliveryOutbox()).length,1);
     await sync.run();
     assert.equal((await data.getInventory()).counts.unread,60); assert.equal((await data.getDeliveryOutbox()).length,0);
+    const sourced= (await data.getCards()).filter(c=>c.references.length);
+    assert.ok(sourced.length>=50); assert.equal(sourced[0].references[0].name,'Fixture source');
+    assert.equal(sourced[0].sourceUrl,sourced[0].references[0].url);
     assert.equal(store.usage().requests,0); assert.equal(latestStatus.state,'ready'); assert.ok(changed>=5);
     const queue=await data.getPersistentFeed(); assert.deepEqual(queue.slice(0,originalQueue.length),originalQueue);
     const unread=(await data.getCards()).filter(c=>!c.isRead).slice(0,6);
@@ -78,6 +94,30 @@ function load(file) {
     sync.configure(settings); await sync.run(); assert.equal(latestStatus.state,'offline'); assert.equal((await data.getCards()).length,prior.length);
     await sync.refresh(); assert.equal(latestStatus.state,'offline'); assert.equal(latestStatus.unread,60); assert.equal((await data.getCards()).length,prior.length);
     const cancelledRefresh=sync.refresh(); sync.foreground(false); await cancelledRefresh;
+    sync.dispose();
+    // Connection checks preserve the confirmed color and successful timestamp while pending/offline.
+    let failHandshake=false, finishHandshake;
+    sync=new BackendSync(status=>latestStatus=status,async()=>{}, {...data,fetch:async()=>{
+      await new Promise(resolve=>{finishHandshake=resolve;});
+      if(failHandshake) throw new Error('simulated connection loss');
+      return new Response(JSON.stringify({protocolVersion:1,provider:'gemini',contentMode:'ai-only'}));
+    }});
+    sync.configure({...settings,enabled:false});
+    let handshake=sync.handshake(); finishHandshake(); await handshake;
+    assert.equal(latestStatus.connection,'connected');
+    const successfulTimestamp=latestStatus.lastHandshakeAt; assert.ok(successfulTimestamp);
+    failHandshake=true; handshake=sync.handshake();
+    assert.equal(latestStatus.connection,'connected');
+    assert.equal(latestStatus.lastHandshakeAt,successfulTimestamp);
+    const failedHandshake=assert.rejects(handshake,/simulated connection loss/);
+    finishHandshake(); await failedHandshake;
+    assert.equal(latestStatus.connection,'offline');
+    assert.equal(latestStatus.lastHandshakeAt,successfulTimestamp);
+    failHandshake=false; handshake=sync.handshake();
+    assert.equal(latestStatus.connection,'offline');
+    finishHandshake(); await handshake;
+    assert.equal(latestStatus.connection,'connected');
+    assert.ok(latestStatus.lastHandshakeAt>=successfulTimestamp);
     sync.dispose();
     const device=(await data.getInventory()).deviceId;
     const uncertainJob=store.queue(device,5); store.markJob(uncertainJob,'uncertain','upstream_timeout_or_network');

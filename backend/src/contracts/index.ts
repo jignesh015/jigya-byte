@@ -1,4 +1,5 @@
-export const TOPICS = ['game-design', 'science', 'history', 'geography', 'space', 'economics', 'psychology', 'technology', 'philosophy', 'biology'];
+export const TOPICS = ['game-design', 'science', 'history', 'geography', 'space', 'economics', 'psychology', 'technology', 'philosophy', 'biology',
+  'literature', 'tech-tips', 'game-industry-stories', 'ai-updates', 'agentic-coding', 'game-industry-news', 'indie-games', 'current-affairs', 'general-knowledge', 'cinema'];
 export class Failure extends Error {
   code: string; status: number; retryAfter: number;
   constructor(code: string, status = 400, retryAfter = 0) { super(code); this.code = code; this.status = status; this.retryAfter = retryAfter; }
@@ -51,6 +52,7 @@ export function snapshot(value: unknown) {
     pendingDeliveryIds: array(v.pendingDeliveryIds ?? [], 100).map(id => string(id)) };
 }
 export type Snapshot = ReturnType<typeof snapshot>;
+export type SourceRef = { id: string; name: string; title: string; url: string; publishedAt: string; retrievedAt: string; dateKind: 'published' | 'observed' };
 export type Card = { id: string; schemaVersion: 1; contentHash: string; ideaFingerprint: string; title: string; summary: string; explanation: string;
   primaryTopicId: string; topicIds: string[]; contentMode: 'ai-only'; providerId: string; modelId: string;
-  promptVersion: string; generatedAt: string; sources: [] };
+  promptVersion: string; generatedAt: string; sources: SourceRef[] };

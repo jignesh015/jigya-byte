@@ -3,7 +3,7 @@ import { Failure, object } from '../contracts/index.ts';
 import { outputSchema } from '../preparation/cards.ts';
 
 export type ProviderDiagnostic = { provider: string; model?: string; httpStatus?: number; providerStatus?: string; providerMessage?: string; finishReason?: string; blockReason?: string; promptTokens?: number; outputTokens?: number; thinkingTokens?: number; totalTokens?: number; outputCharacters?: number; networkError?: string };
-export type Generate = (prompt: string, report?: (diagnostic: ProviderDiagnostic) => void) => Promise<unknown>;
+export type Generate = (prompt: string, report?: (diagnostic: ProviderDiagnostic) => void, limits?: { maxOutputTokens: number }) => Promise<unknown>;
 export async function readJson(response: Response): Promise<unknown> {
   const reader = response.body?.getReader();
   if (!reader) throw new Failure('empty_upstream_response');
@@ -26,14 +26,16 @@ export function upstreamFailure(response: Response) {
     [401,403].includes(response.status) ? 'provider_credentials_or_access' : 'provider_configuration', 502, Math.max(0, wait || 0));
 }
 export function cloudGenerator(config: Config, fetcher: typeof fetch = fetch): Generate {
-  return async (prompt, report) => {
+  return async (prompt, report, limits) => {
     if (config.provider === 'disabled') throw new Failure('generation_disabled');
     // UTF-8 byte count is a deliberately conservative input-token bound.
     if (Buffer.byteLength(prompt + JSON.stringify(outputSchema)) > config.maxInput) throw new Failure('input_budget_exceeded');
+    const maxOutput = limits?.maxOutputTokens ?? config.maxOutput;
+    if (!Number.isSafeInteger(maxOutput) || maxOutput < 128 || maxOutput > config.maxOutput) throw new Failure('invalid_output_budget');
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
     const body = {
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: config.maxOutput, responseMimeType: 'application/json', responseJsonSchema: outputSchema,
+      generationConfig: { maxOutputTokens: maxOutput, responseMimeType: 'application/json', responseJsonSchema: outputSchema,
         ...(config.thinkingLevel ? { thinkingConfig: { thinkingLevel: config.thinkingLevel } } : {}) },
     };
     let response: Response;

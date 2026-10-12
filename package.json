@@ -4,11 +4,11 @@
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "start": "expo start",
+    "start": "expo start --port 8081",
     "android": "expo run:android",
     "typecheck": "tsc --noEmit",
     "audit:public": "node scripts/audit-publication.mjs",
-    "test": "node scripts/test-data.cjs && node scripts/test-backend-integration.cjs",
+    "test": "node scripts/test-feed-gesture.cjs && node scripts/test-data.cjs && node scripts/test-backend-integration.cjs",
     "backend": "npm --prefix backend start",
     "backend:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend-launcher.ps1",
     "backend:test": "npm --prefix backend test",

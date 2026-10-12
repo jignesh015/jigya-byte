@@ -54,21 +54,48 @@ try {
     ['authenticated URL', /https?:\/\/[^\s/"'<>:]+:[^\s/@"'<>]+@/g],
     ['personal Windows path', /[A-Za-z]:[\\/]Users[\\/](?!Public\b|Default\b)[^\s"'<>]+/g],
   ];
-  for (const file of files) {
-    const path = resolve(root, file);
-    if (!existsSync(path)) continue;
-    const bytes = readFileSync(path);
+  function scan(file, bytes, location = file) {
     if (/(?:^|\/)\.env[^/]*$|\.env(?:\.|$)|\.(?:keystore|jks|p12|pfx|pem|key|sqlite|db)(?:-|$)/i.test(file)) {
-      issues.add(`${file}: private environment, signing key or database is publishable`);
+      issues.add(`${location}: private environment, signing key or database is publishable`);
     }
     for (const secret of secrets) {
-      if (bytes.includes(Buffer.from(secret))) issues.add(`${file}: matches a local environment credential`);
+      if (bytes.includes(Buffer.from(secret))) issues.add(`${location}: matches a local environment credential`);
     }
     const text = bytes.toString('utf8');
     for (const [label, pattern] of patterns) {
       for (const match of text.matchAll(pattern)) {
         const line = text.slice(0, match.index).split('\n').length;
-        issues.add(`${file}:${line}: ${label}`);
+        issues.add(`${location}:${line}: ${label}`);
+      }
+    }
+  }
+  for (const file of files) {
+    const path = resolve(root, file);
+    if (existsSync(path)) scan(file, readFileSync(path));
+  }
+  // Disk contents can differ from what is staged, or a staged file may be deleted on disk.
+  // Inspect exact index blobs too, without staging anything or printing their contents.
+  let indexFiles = 0;
+  if (hasRepository) {
+    const entries = git(['ls-files', '--stage', '-z']).split('\0').filter(Boolean).map(entry => {
+      const match = entry.match(/^\d+ ([a-f0-9]+) ([0-3])\t([\s\S]+)$/);
+      if (!match) throw new Error('Unable to inspect Git index metadata.');
+      if (match[2] !== '0') issues.add(`${match[3]}: unresolved index conflict`);
+      return { oid: match[1], file: match[3] };
+    });
+    if (entries.length) {
+      const blobs = execFileSync('git', ['cat-file', '--batch'], { cwd: root,
+        input: entries.map(entry => entry.oid).join('\n') + '\n', maxBuffer: 128 * 1024 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'] });
+      let offset = 0;
+      for (const entry of entries) {
+        const end = blobs.indexOf(10, offset);
+        const header = blobs.subarray(offset, end).toString('ascii').match(/^([a-f0-9]+) blob (\d+)$/);
+        if (end < 0 || !header || header[1] !== entry.oid) throw new Error('Unable to inspect Git index blob.');
+        const length = Number(header[2]); const start = end + 1;
+        if (start + length >= blobs.length) throw new Error('Incomplete Git index blob.');
+        scan(entry.file, blobs.subarray(start, start + length), `${entry.file} [index]`);
+        offset = start + length + 1; indexFiles++;
       }
     }
   }
@@ -83,13 +110,13 @@ try {
   for (const probe of probes) if (!ignored.has(probe)) issues.add(`${probe}: required ignore rule missing`);
   const template = 'backend/env.example';
   if (!files.includes(template)) issues.add(`${template}: safe setup template is not publishable`);
-  console.log(`Scanned ${files.length} publishable files; compared ${secrets.size} local credential values without printing them.`);
+  console.log(`Scanned ${files.length} publishable files and ${indexFiles} exact index blobs; compared ${secrets.size} local credential values without printing them.`);
   for (const issue of issues) console.error(issue);
   if (issues.size) process.exitCode = 1;
   else console.log('PASS: no local credential matches or recognized secret patterns in publishable files.');
   if (probes.every(probe => ignored.has(probe))) console.log('PASS: environment, signing key, database, IDE and launcher artifact ignore rules.');
   if (!hasRepository) console.log('No Git repository exists here yet; commit history could not be audited.');
-  else console.log('This scans current files, including tracked files; it does not audit earlier commits.');
+  else console.log('This scans working files and exact staged contents; it does not audit earlier commits.');
 } finally {
   if (temporary) rmSync(temporary, { recursive: true, force: true });
 }

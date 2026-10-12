@@ -16,8 +16,8 @@ export class BackendSync {
   private handshakePromise: Promise<BackendServerStatus> | null = null;
   private currentStatus: BackendStatus = { state: 'disabled', message: 'Backend connection is optional.', unread: 0, connection: 'disabled' };
   private retryRequested = false;
-  private refreshWaiters: (() => void)[] = [];
-  private finishRefresh() { for (const resolve of this.refreshWaiters.splice(0)) resolve(); }
+  private refreshWaiters: ((status: BackendStatus) => void)[] = [];
+  private finishRefresh() { for (const resolve of this.refreshWaiters.splice(0)) resolve(this.currentStatus); }
   constructor(private readonly update: (status: BackendStatus) => void, private readonly changed: () => Promise<void>, private readonly deps: Dependencies = defaults) {}
   private publish(patch: Partial<BackendStatus>) { this.currentStatus = { ...this.currentStatus, ...patch }; this.update(this.currentStatus); }
   private stopHeartbeat() { if (this.heartbeatTimer) clearInterval(this.heartbeatTimer); this.heartbeatTimer = undefined; }
@@ -25,12 +25,14 @@ export class BackendSync {
     this.stopHeartbeat();
     if (!this.active || this.settings.pairingToken.length < 32) return;
     void this.handshake().catch(() => {});
-    this.heartbeatTimer = setInterval(() => { void this.handshake().catch(() => {}); }, 10_000);
+    this.heartbeatTimer = setInterval(() => { void this.handshake().catch(() => {}); }, 5000);
   }
   configure(settings: BackendSettings) {
+    const connectionChanged = settings.serviceUrl !== this.settings.serviceUrl || settings.pairingToken !== this.settings.pairingToken;
     this.settings = settings; this.generation++; this.controller?.abort(); this.handshakeController?.abort();
     this.handshakePromise = null;
     if (this.timer) clearTimeout(this.timer);
+    if (connectionChanged) this.publish({ connection: 'disabled', lastHandshakeAt: undefined });
     if (settings.pairingToken.length >= 32) this.startHeartbeat();
     else { this.stopHeartbeat(); this.publish({ connection: 'disabled', connectionMessage: 'Backend connection is disabled.' }); this.finishRefresh(); }
     this.request();
@@ -45,9 +47,9 @@ export class BackendSync {
     } else { this.startHeartbeat(); this.request(); }
   }
   dispose() { this.active = false; this.generation++; this.controller?.abort(); this.handshakeController?.abort(); this.stopHeartbeat(); if (this.timer) clearTimeout(this.timer); this.finishRefresh(); }
-  refresh(): Promise<void> {
-    if (!this.active || !this.settings.enabled) return Promise.resolve();
-    const completion = new Promise<void>(resolve => this.refreshWaiters.push(resolve));
+  refresh(): Promise<BackendStatus> {
+    if (!this.active || !this.settings.enabled) return Promise.resolve(this.currentStatus);
+    const completion = new Promise<BackendStatus>(resolve => this.refreshWaiters.push(resolve));
     void this.handshake().catch(() => {});
     this.request();
     return completion;
@@ -67,7 +69,8 @@ export class BackendSync {
     const valid = () => this.active && generation === this.generation;
     const controller = new AbortController(); this.handshakeController = controller;
     const timeout = setTimeout(() => controller.abort(), 5000);
-    this.publish({ connection: 'checking', connectionMessage: 'Checking backend connection…' });
+    // Keep the last confirmed result visible until this check succeeds or fails.
+    if (this.currentStatus.connection === 'disabled') this.publish({ connection: 'checking', connectionMessage: 'Checking backend connection…' });
     try {
       const response = await this.deps.fetch(`${settings.serviceUrl}/v1/status`, { method: 'GET', signal: controller.signal,
         headers: { Authorization: `Bearer ${settings.pairingToken}` } });
@@ -81,7 +84,7 @@ export class BackendSync {
       return status;
     } catch (error) {
       if (valid()) this.publish({ connection: 'offline', connectionMessage: error instanceof Error && /^(Pairing|Backend|Backend protocol)/.test(error.message)
-        ? error.message : 'Could not reach the backend.', lastHandshakeAt: new Date().toISOString() });
+        ? error.message : 'Could not reach the backend.' });
       throw error;
     } finally {
       clearTimeout(timeout);

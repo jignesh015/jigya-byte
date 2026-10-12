@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import type { IncomingMessage } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { readConfig, providerRoutes } from './config.ts';
+import { readConfig, providerRoutes, generationBatchSize } from './config.ts';
 import type { Config } from './config.ts';
 import { array, Failure, history, object, snapshot, string } from './contracts/index.ts';
 import { Store } from './storage/store.ts';
@@ -124,6 +124,8 @@ export function createBackend(config: Config, store = new Store(config.database)
           retryUncertainAllowed: uncertain.length ? uncertain.every(job => freeRetryRoute(job.provider_index) && (!job.diagnostics || JSON.parse(job.diagnostics).provider === 'gemini')) : freeRetryRoute(0),
           fallbackChain: routes.map(route => ({ provider: route.provider, model: route.model })),
           limits: { requests: config.requestLimit, reservedTokens: config.tokenLimit, reservedCost: config.costLimit },
+          generation: { maxCardsPerRequest: generationBatchSize(config), deliveryBatch: 10, topicSelection: 'random-balanced', liveSourcesEnabled: config.liveSources },
+          sources: jobs.live.status,
           inventory: { minimum: config.unreadMin, refillAt: config.refillAt, target: config.target, readNonFavoriteLimit: config.readLimit },
           jobs: store.jobs() }); return;
       }

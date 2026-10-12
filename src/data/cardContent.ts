@@ -33,6 +33,16 @@ export const topics: Topic[] = [
   { id: 'technology', name: 'Technology', sortOrder: 7 },
   { id: 'philosophy', name: 'Philosophy', sortOrder: 8 },
   { id: 'biology', name: 'Biology', sortOrder: 9 },
+  { id: 'literature', name: 'Literature', sortOrder: 10 },
+  { id: 'tech-tips', name: 'Tech Tips', sortOrder: 11 },
+  { id: 'game-industry-stories', name: 'Game Industry Stories', sortOrder: 12 },
+  { id: 'ai-updates', name: 'AI Updates', sortOrder: 13 },
+  { id: 'agentic-coding', name: 'Agentic Coding', sortOrder: 14 },
+  { id: 'game-industry-news', name: 'Game Industry News', sortOrder: 15 },
+  { id: 'indie-games', name: 'Indie Games', sortOrder: 16 },
+  { id: 'current-affairs', name: 'Current Affairs', sortOrder: 17 },
+  { id: 'general-knowledge', name: 'General Knowledge', sortOrder: 18 },
+  { id: 'cinema', name: 'Cinema: Bollywood & Hollywood', sortOrder: 19 },
 ];
 
 export const topicColors: Record<string, string> = {
@@ -46,6 +56,16 @@ export const topicColors: Record<string, string> = {
   technology: '#66C8E3',
   philosophy: '#D69AC8',
   biology: '#A6D675',
+  literature: '#E6B3CE',
+  'tech-tips': '#73D9E6',
+  'game-industry-stories': '#D5A6F2',
+  'ai-updates': '#8AAFF5',
+  'agentic-coding': '#7BD9B0',
+  'game-industry-news': '#F0AD78',
+  'indie-games': '#EACD78',
+  'current-affairs': '#E9959E',
+  'general-knowledge': '#B6D88A',
+  cinema: '#DCA3E4',
 };
 
 export function topicColor(topicId: string): string {
