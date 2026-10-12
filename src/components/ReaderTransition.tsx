@@ -42,15 +42,15 @@ export function ReaderTransition({ children, reducedMotion, onSwipeBack }: { chi
         const quickFlick = deltaX >= 14 && deltaX / elapsed >= 0.45;
         const shouldGoBack = deltaX >= Math.max(24, screenWidth * 0.075) || quickFlick;
         if (shouldGoBack && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
-          Animated.timing(dragX, { toValue: screenWidth, duration: 110, useNativeDriver: false }).start(({ finished }) => {
+          Animated.timing(dragX, { toValue: screenWidth, duration: 110, useNativeDriver: true }).start(({ finished }) => {
             if (finished) onSwipeBackRef.current?.();
             else dragX.setValue(0);
           });
         } else {
-          Animated.spring(dragX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start();
+          Animated.spring(dragX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: true }).start();
         }
       }}
-      onResponderTerminate={() => Animated.spring(dragX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start()}
+      onResponderTerminate={() => Animated.spring(dragX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: true }).start()}
       onResponderTerminationRequest={() => false}
     >
       <Animated.View

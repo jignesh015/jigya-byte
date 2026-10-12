@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -125,7 +125,7 @@ function FloatingDiscoveryToast({ notice, reducedMotion, onDismiss }: {
   );
 }
 
-function CardDescription({ text }: { text: string }) {
+const CardDescription = memo(function CardDescription({ text }: { text: string }) {
   const [space, setSpace] = useState({ width: 0, height: 0 });
   const fontSize = useMemo(() => {
     if (space.width <= 0 || space.height <= 0) return 18;
@@ -153,8 +153,6 @@ function CardDescription({ text }: { text: string }) {
       }}
     >
       <Text
-        adjustsFontSizeToFit
-        minimumFontScale={0.82}
         numberOfLines={maxLines}
         style={[styles.cardSummary, { fontSize, lineHeight }]}
       >
@@ -162,7 +160,7 @@ function CardDescription({ text }: { text: string }) {
       </Text>
     </View>
   );
-}
+});
 
 function ActionButton({
   label,
@@ -343,12 +341,12 @@ function FeedScreen({
         const card = cardsById.get(assignments[currentIndex.current]?.cardId ?? '');
         const quickFlick = deltaX <= -14 && deltaX / elapsed <= -0.45;
         if (card && (deltaX <= -28 || quickFlick) && Math.abs(deltaX) > Math.abs(deltaY) * 1.15) {
-          Animated.timing(swipeX, { toValue: -screenWidth, duration: 110, useNativeDriver: false }).start(({ finished }) => {
+          Animated.timing(swipeX, { toValue: -screenWidth, duration: 110, useNativeDriver: true }).start(({ finished }) => {
             if (finished) onOpenDetails(card);
             else swipeX.setValue(0);
           });
         } else {
-          Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start();
+          Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: true }).start();
         }
       }}
       onResponderTerminate={() => {
@@ -359,7 +357,7 @@ function FeedScreen({
           scrollRef.current?.scrollTo({ y: scrollMetrics.current.offset, animated: !reducedMotion });
         }
         pullY.setValue(0);
-        Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: false }).start();
+        Animated.spring(swipeX, { toValue: 0, tension: 160, friction: 20, useNativeDriver: true }).start();
       }}
       onResponderTerminationRequest={() => false}
     >
@@ -1194,7 +1192,15 @@ export default function App() {
                 </View>
               ) : null}
 
-              {view === 'main' ? <BottomNavigation active={tab} onChange={setTab} /> : null}
+              {/* Stays mounted behind the reader overlay so the feed keeps its height when the reader closes. */}
+              {view !== 'interests' ? (
+                <View
+                  pointerEvents={view === 'main' ? 'auto' : 'none'}
+                  importantForAccessibility={view === 'main' ? 'auto' : 'no-hide-descendants'}
+                >
+                  <BottomNavigation active={tab} onChange={setTab} />
+                </View>
+              ) : null}
               <NavigationBar style="dark" />
             </>
           )}
