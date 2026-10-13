@@ -1,5 +1,7 @@
 # JigyaByte backend
 
+Cloud migration (2026-10-13): Supabase now hosts the API and transferred backend data. See [deployment evidence](../supabase/deployment-status.md) and [cloud operation guide](../supabase/README.md). The recurring generation schedule and live generation probe remain pending explicit authorization. Keep the PC worker stopped after cutover; reconcile cloud usage and deliveries before returning to local generation.
+
 The optional PC backend creates new cards with Gemini and syncs them to the phone's local SQLite library. Evergreen cards use model knowledge; news cards use recent material from free public endpoints. Gemini remains the only generation provider. AI summaries are unverified even when source links are attached.
 
 ## Card writing policy

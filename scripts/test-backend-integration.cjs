@@ -50,6 +50,10 @@ function load(file) {
   try{
     const data=load(path.resolve('src/data/database.ts'));
     const connection=load(path.resolve('src/data/backendConnection.ts'));
+    assert.equal(connection.validateServiceUrl(connection.cloudBackendUrl+'/'),connection.cloudBackendUrl);
+    for(const invalid of ['http://fuomvvzgdhleikztdpgz.supabase.co/functions/v1/jigyabyte-api','https://other.supabase.co/functions/v1/jigyabyte-api','https://fuomvvzgdhleikztdpgz.supabase.co','https://fuomvvzgdhleikztdpgz.supabase.co/functions/v1/jigyabyte-api?token=secret']) {
+      assert.throws(()=>connection.validateServiceUrl(invalid));
+    }
     const {BackendSync}=load(path.resolve('src/data/backendSync.ts'));
     await data.initializeDatabase(); assert.equal((await data.getCards()).length,0);
     const catalog=load(path.resolve('src/data/cardContent.ts'));

@@ -1,4 +1,5 @@
 import type { Config } from '../config.ts';
+import { Buffer } from 'node:buffer';
 import { Failure, object } from '../contracts/index.ts';
 import { outputSchema } from '../preparation/cards.ts';
 

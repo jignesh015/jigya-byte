@@ -43,3 +43,5 @@ Thumbs.db
 backend/data/
 backend/node_modules/
 backend/dist/
+supabase/.temp/
+supabase/.branches/

@@ -438,8 +438,8 @@ function FeedScreen({
                 <Text style={styles.discoverTitle}>{discoveryBusy ? 'Checking for more cards…'
                   : geminiEnabled ? 'Load more cards' : 'Connect Gemini in Settings'}</Text>
                 <Text style={styles.discoverSubtitle}>{geminiEnabled
-                  ? 'Ask your PC backend for another batch'
-                  : 'Open Settings → Topics to connect your PC backend'}</Text>
+                  ? 'Ask your backend for another batch'
+                  : 'Open Settings → Topics to connect your backend'}</Text>
               </View>
               <Text style={styles.discoverArrow}>›</Text>
             </Pressable>
@@ -615,13 +615,13 @@ function InterestsScreen({
       </View>
       <View style={styles.generatorPanel}>
         <Text style={styles.reviewTitle}>Backend connection</Text>
-        <Text style={styles.interestsDescription}>Your PC backend uses Gemini to make short, curiosity-first cards, then saves them here for offline reading. The Gemini key stays on your PC.</Text>
+        <Text style={styles.interestsDescription}>Your backend uses Gemini to make short, curiosity-first cards, then saves them here for offline reading. The Gemini key stays on the server.</Text>
         <Pressable accessibilityRole="switch" accessibilityState={{ checked: backend.enabled }} onPress={() => setBackend(current => ({ ...current, enabled: !current.enabled }))} style={styles.topicChip}>
           <Text style={styles.topicChipText}>{backend.enabled ? '✓ Automatic refill enabled' : '+ Enable automatic refill'}</Text>
         </Pressable>
         <TextInput accessibilityLabel="Backend server address" value={backend.serviceUrl} onChangeText={serviceUrl => setBackend(current => ({ ...current, serviceUrl }))} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={styles.serviceInput} />
         <TextInput accessibilityLabel="Backend pairing token" value={backend.pairingToken} onChangeText={pairingToken => setBackend(current => ({ ...current, pairingToken }))} secureTextEntry autoCapitalize="none" autoCorrect={false} style={styles.serviceInput} placeholder="Backend pairing token" placeholderTextColor={colors.muted} />
-        <Text style={styles.reviewHint}>Use BACKEND_DEVICE_TOKEN from the PC configuration. Your Gemini key stays on the PC.</Text>
+        <Text style={styles.reviewHint}>Use your backend pairing token. Your Gemini key stays on the server.</Text>
       </View>
       <Pressable
         accessibilityRole="button"

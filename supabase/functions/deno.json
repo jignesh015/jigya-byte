@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "postgres": "npm:postgres@3.4.7",
+    "fast-xml-parser": "npm:fast-xml-parser@5.11.2"
+  },
+  "compilerOptions": { "strict": true, "types": ["node"] }
+}

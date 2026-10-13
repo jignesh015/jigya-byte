@@ -1,0 +1,11 @@
+project_id = "fuomvvzgdhleikztdpgz"
+
+[functions.jigyabyte-api]
+verify_jwt = false
+entrypoint = "./functions/jigyabyte-api/index.ts"
+import_map = "./functions/deno.json"
+
+[functions.jigyabyte-worker]
+verify_jwt = false
+entrypoint = "./functions/jigyabyte-worker/index.ts"
+import_map = "./functions/deno.json"

@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
+import process from 'node:process';
 
-export function readConfig(env: NodeJS.ProcessEnv = process.env) {
+export function readConfig(env: Record<string, string | undefined> = process.env) {
   const number = (key: string, fallback: number, min = 0, max = 1e9) => {
     const value = Number(env[key] ?? fallback);
     if (!Number.isFinite(value) || value < min || value > max) throw new Error(`Invalid ${key}`);

@@ -1,7 +1,11 @@
 import { createHash, randomInt } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { XMLParser } from 'fast-xml-parser';
 import type { SourceRef } from '../contracts/index.ts';
-import type { Store } from '../storage/store.ts';
+type SourceCache = {
+  cachedSource(key: string): { fetchedAt: number; body: unknown } | null | Promise<{ fetchedAt: number; body: unknown } | null>;
+  cacheSource(key: string, body: unknown): void | Promise<void>;
+};
 
 export const NEWS_TOPICS = ['ai-updates', 'game-industry-news', 'current-affairs'];
 export type Evidence = SourceRef & { topicIds: string[]; excerpt: string; dateKind: 'published' | 'observed' };
@@ -89,9 +93,9 @@ export function parseSteam(raw: unknown, now = Date.now()): Evidence[] {
 }
 
 export class LiveSources {
-  store: Store; fetcher: typeof fetch; status: SourceStatus[] = [];
+  store: SourceCache; fetcher: typeof fetch; status: SourceStatus[] = [];
   pending = new Map<string, Promise<Evidence[]>>();
-  constructor(store: Store, fetcher: typeof fetch = fetch) { this.store = store; this.fetcher = fetcher; }
+  constructor(store: SourceCache, fetcher: typeof fetch = fetch) { this.store = store; this.fetcher = fetcher; }
   async load(key: string, url: string, parse: (body: unknown) => Evidence[] | Promise<Evidence[]>, xml = false): Promise<Evidence[]> {
     const active = this.pending.get(key); if (active) return active;
     const promise = this.read(key, url, parse, xml);
@@ -99,7 +103,7 @@ export class LiveSources {
     try { return await promise; } finally { this.pending.delete(key); }
   }
   private async read(key: string, url: string, parse: (body: unknown) => Evidence[] | Promise<Evidence[]>, xml: boolean) {
-    const cached = this.store.cachedSource(key);
+    const cached = await this.store.cachedSource(key);
     if (cached && Date.now() - cached.fetchedAt < 3600000) {
       const items = (cached.body as Evidence[]).filter(item => Date.now() - Date.parse(item.publishedAt) <= 7 * DAY);
       this.status.push({ endpoint: key, state: 'cached', items: items.length }); return items;
@@ -125,11 +129,11 @@ export class LiveSources {
       } finally { await reader.cancel(); }
       const text = Buffer.concat(chunks).toString('utf8');
       const items = await parse(xml ? text : JSON.parse(text));
-      this.store.cacheSource(key, items);
+      await this.store.cacheSource(key, items);
       this.status.push({ endpoint: key, state: 'fetched', items: items.length }); return items;
     } catch (error) {
       // Cache failures for an hour too: avoid hammering a broken free service.
-      this.store.cacheSource(key, []);
+      await this.store.cacheSource(key, []);
       const networkCode = (error as { cause?: { code?: string } })?.cause?.code;
       const reason = error instanceof Error && /^http_\d{3}$|^unsafe_redirect$/.test(error.message) ? error.message
         : networkCode && /^[A-Z0-9_]{1,64}$/.test(networkCode) ? networkCode : error instanceof Error ? error.name : 'source_error';
