@@ -559,6 +559,8 @@ function InterestsScreen({
   const [draft, setDraft] = useState(initialIds);
   const [backend, setBackend] = useState(backendSettings);
   const initialKey = initialIds.join(',');
+  const allSelected = topics.every(topic => draft.includes(topic.id));
+  const noneSelected = !topics.some(topic => draft.includes(topic.id));
 
   useEffect(() => setDraft(initialIds), [initialKey]);
 
@@ -573,6 +575,26 @@ function InterestsScreen({
       <Text style={styles.eyebrow}>MAKE IT YOURS</Text>
       <Text style={styles.interestsTitle}>What are you curious about?</Text>
       <Text style={styles.interestsDescription}>Choose a few topics. Two out of every ten feed slots will look here when matching cards are available.</Text>
+      <View style={styles.topicSelectionActions}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Select all topics"
+          disabled={saving || allSelected}
+          onPress={() => setDraft(topics.map(topic => topic.id))}
+          style={({ pressed }) => [styles.actionButton, styles.actionButtonCompact, (saving || allSelected) && styles.disabled, pressed && styles.pressed]}
+        >
+          <Text style={styles.actionText}>Select all</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Deselect all topics"
+          disabled={saving || noneSelected}
+          onPress={() => setDraft([])}
+          style={({ pressed }) => [styles.actionButton, styles.actionButtonCompact, (saving || noneSelected) && styles.disabled, pressed && styles.pressed]}
+        >
+          <Text style={styles.actionText}>Deselect all</Text>
+        </Pressable>
+      </View>
       <View style={styles.topicGrid}>
         {topics.map((topic) => {
           const selected = draft.includes(topic.id);
@@ -580,6 +602,7 @@ function InterestsScreen({
             <Pressable
               key={topic.id}
               accessibilityRole="checkbox"
+              accessibilityLabel={topic.name}
               accessibilityState={{ checked: selected }}
               onPress={() => toggle(topic.id)}
               style={({ pressed }) => [styles.topicChip, selected && styles.topicChipSelected, pressed && styles.pressed]}
@@ -1312,13 +1335,14 @@ const styles = StyleSheet.create({
   reviewScheduled: { color: colors.muted, fontSize: 11, marginTop: 12 },
   interestsTitle: { color: colors.text, fontSize: 32, lineHeight: 38, letterSpacing: -0.8, fontWeight: '700', marginTop: 10 },
   interestsDescription: { color: colors.muted, fontSize: 15, lineHeight: 23, marginTop: 11, marginBottom: 25 },
+  topicSelectionActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   topicGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
   topicChip: { flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 44, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: 1 },
   topicChipSelected: { borderColor: colors.accent, backgroundColor: colors.accentDim },
-  topicChipGlyph: { color: colors.muted, fontSize: 16, fontWeight: '500' },
-  topicChipGlyphSelected: { color: colors.accent, fontWeight: '800' },
+  topicChipGlyph: { width: 18, textAlign: 'center', color: colors.muted, fontSize: 16, fontWeight: '500' },
+  topicChipGlyphSelected: { color: colors.accent },
   topicChipText: { color: colors.text, fontSize: 12, fontWeight: '500' },
-  topicChipTextSelected: { color: colors.accent, fontWeight: '700' },
+  topicChipTextSelected: { color: colors.accent },
   primaryButton: { minHeight: 52, borderRadius: 16, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center', marginTop: 27 },
   primaryButtonText: { color: colors.background, fontSize: 14, fontWeight: '800' },
   skipButton: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 9 },

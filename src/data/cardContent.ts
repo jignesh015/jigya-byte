@@ -43,6 +43,13 @@ export const topics: Topic[] = [
   { id: 'current-affairs', name: 'Current Affairs', sortOrder: 17 },
   { id: 'general-knowledge', name: 'General Knowledge', sortOrder: 18 },
   { id: 'cinema', name: 'Cinema: Bollywood & Hollywood', sortOrder: 19 },
+  { id: 'ancient-history', name: 'Ancient History', sortOrder: 20 },
+  { id: 'indian-history', name: 'Indian History', sortOrder: 21 },
+  { id: 'ancient-india', name: 'Ancient India', sortOrder: 22 },
+  { id: 'indian-myths-and-epics', name: 'Indian Myths and Epics', sortOrder: 23 },
+  { id: 'art', name: 'Art', sortOrder: 24 },
+  { id: 'product-design', name: 'Product Design', sortOrder: 25 },
+  { id: 'ux', name: 'UX', sortOrder: 26 },
 ];
 
 export const topicColors: Record<string, string> = {
@@ -66,6 +73,13 @@ export const topicColors: Record<string, string> = {
   'current-affairs': '#E9959E',
   'general-knowledge': '#B6D88A',
   cinema: '#DCA3E4',
+  'ancient-history': '#D9B88C',
+  'indian-history': '#EEAD77',
+  'ancient-india': '#D7C185',
+  'indian-myths-and-epics': '#C5A3E8',
+  art: '#E99DB5',
+  'product-design': '#85CFBC',
+  ux: '#8FBDEC',
 };
 
 export function topicColor(topicId: string): string {

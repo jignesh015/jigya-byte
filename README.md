@@ -4,7 +4,7 @@ JigyaByte is a local-first Android app for quick, memorable discoveries. Its fee
 
 ## How new cards are made
 
-The Gemini API is the only content-generation provider. A PC backend batches cards and syncs them to the phone. Free public feeds and endpoints provide recent news with source links and dates saved alongside those cards; evergreen cards use model knowledge. All cards remain AI-generated and unverified. The Gemini key stays in ignored `backend/.env` and never goes on the phone. Generation randomly balances the 20 topics and caches surplus to reduce daily requests.
+The Gemini API is the only content-generation provider. A PC backend batches cards and syncs them to the phone. Free public feeds and endpoints provide recent news with source links and dates saved alongside those cards; evergreen cards use model knowledge. All cards remain AI-generated and unverified. The Gemini key stays in ignored `backend/.env` and never goes on the phone. Generation randomly balances the 27 topics and caches surplus to reduce daily requests.
 
 The backend is optional for reading. Cards already saved in the app stay available offline, but creating more cards requires the backend to be running and paired with the app. To connect, open **Settings → Topics → Backend connection**, enable automatic refill, set the PC's private LAN address (or use USB forwarding), enter `BACKEND_DEVICE_TOKEN`, and save. Settings has a fixed-size bottom panel with a glowing connection indicator, last successful connection time, local unread count and refresh button. See [backend/README.md](backend/README.md) for setup and retry details.
 

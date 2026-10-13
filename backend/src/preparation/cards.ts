@@ -38,7 +38,7 @@ export function prepare(raw: unknown, config: Config, expected: number, evidence
     const contentHash = hash(normalize(`${title}\n${summary}\n${explanation}`));
     return { id: `card-${contentHash}`, schemaVersion: 1, contentHash, ideaFingerprint: hash(normalize(title)), title, summary, explanation,
       primaryTopicId, topicIds, contentMode: 'ai-only', providerId: config.provider, modelId: config.model ?? 'fixture',
-      promptVersion: '5', generatedAt: new Date().toISOString(), sources };
+      promptVersion: '6', generatedAt: new Date().toISOString(), sources };
   });
 }
 export function nearDuplicate(a: Card, b: Card): boolean {
@@ -67,6 +67,14 @@ export function prepareBatch(raw: unknown, config: Config, topics: string[], evi
 }
 
 export const topicGuidance: Record<string, string> = {
+  'ancient-history': 'A surprising, well-established detail about ancient civilizations around the world: daily life, inventions, trade or archaeology. Give a clear place and period; distinguish evidence from disputed interpretations and avoid false first-ever claims.',
+  'indian-history': 'A memorable, well-established detail from Indian history across periods and regions, including everyday life, cultural exchange and social change. State the period; distinguish documented events from legends and disputed claims.',
+  'ancient-india': 'A surprising detail about ancient India: archaeology, daily life, trade, ideas, art or institutions. Use a clear place and period; separate archaeological evidence from later traditions and avoid projecting modern borders or invented achievements into the past.',
+  'indian-myths-and-epics': 'An intriguing story, character choice, symbol or contrasting retelling from Indian myths and epics, including the Ramayana and Mahabharata. Attribute it to the text or tradition; acknowledge regional variations when relevant. Present sacred narratives respectfully as stories or beliefs, not verified historical events; never invent verses or quotations.',
+  art: 'One striking detail about an artwork, artistic technique, visual choice or art movement, including Indian and global art. Help the reader notice something concrete; distinguish interpretation from established facts and avoid invented artist intentions.',
+  'product-design': 'One useful product design insight about how a physical or digital product solves a human need: tradeoffs, materials, ergonomics, prototyping or everyday use. Give a concrete example in plain language; distinguish a design principle from an unverified company anecdote.',
+  ux: 'One practical user experience insight about usability, accessibility, navigation, feedback or user research. Use a familiar example and explain the benefit in plain language; avoid jargon, invented research statistics and manipulative design advice.',
+  philosophy: 'One thought-provoking question, thought experiment or philosophical idea with an everyday example; include Indian and global traditions. Make the reasoning approachable, distinguish a position from a settled fact, and avoid invented quotations or reducing a tradition to a slogan.',
   literature: 'Surprising details about books, authors, storytelling, poetry or literary history; include world and Indian literature. Avoid invented quotations and long copyrighted passages.',
   'tech-tips': 'One useful everyday technology tip with a concrete action and benefit: devices, software, shortcuts, privacy or troubleshooting. Name the platform when a step depends on it; avoid unverified current UI paths.',
   'game-industry-stories': 'A memorable, well-established behind-the-scenes game industry story, production decision, constraint or historical fact. Separate documented events from folklore; do not invent anecdotes.',

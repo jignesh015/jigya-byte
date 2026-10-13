@@ -93,7 +93,7 @@ test('model references resolve only to supplied matching evidence, never model-s
 });
 
 test('randomized least-generated selection covers every topic evenly and catches up missing topics', () => {
-  const picked = distributedTopics(TOPICS, 120, {}, () => 0);
+  const picked = distributedTopics(TOPICS, TOPICS.length * 6, {}, () => 0);
   for (const topic of TOPICS) assert.equal(picked.filter(t => t === topic).length, 6);
   const counts = Object.fromEntries(TOPICS.map(t => [t, 10])); counts.cinema = 0;
   assert.deepEqual(distributedTopics(TOPICS, 10, counts), Array(10).fill('cinema'));

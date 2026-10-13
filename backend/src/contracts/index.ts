@@ -1,5 +1,6 @@
 export const TOPICS = ['game-design', 'science', 'history', 'geography', 'space', 'economics', 'psychology', 'technology', 'philosophy', 'biology',
-  'literature', 'tech-tips', 'game-industry-stories', 'ai-updates', 'agentic-coding', 'game-industry-news', 'indie-games', 'current-affairs', 'general-knowledge', 'cinema'];
+  'literature', 'tech-tips', 'game-industry-stories', 'ai-updates', 'agentic-coding', 'game-industry-news', 'indie-games', 'current-affairs', 'general-knowledge', 'cinema',
+  'ancient-history', 'indian-history', 'ancient-india', 'indian-myths-and-epics', 'art', 'product-design', 'ux'];
 export class Failure extends Error {
   code: string; status: number; retryAfter: number;
   constructor(code: string, status = 400, retryAfter = 0) { super(code); this.code = code; this.status = status; this.retryAfter = retryAfter; }

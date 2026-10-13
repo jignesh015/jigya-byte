@@ -10,13 +10,15 @@ Cards should deliver a “Wow, I didn't know that!” moment, spark a question o
 
 The original ten topics remain available. The expanded catalog adds Literature, Tech Tips, Game Industry Stories, AI Updates, Agentic Coding, Game Industry News, Indie Games, Current Affairs, General Knowledge, and Cinema (Bollywood & Hollywood). These participate in discovery rotation and can be selected as interests in the updated app. Each new topic has specific writing guidance, including actionable tips, established industry stories, uncommon general facts and cinema details from both industries.
 
+The catalog also includes Ancient History (`ancient-history`), Indian History (`indian-history`), Ancient India (`ancient-india`), Indian Myths and Epics (`indian-myths-and-epics`), Art (`art`), Product Design (`product-design`), and UX (`ux`), for 27 topics in total. Philosophy (`philosophy`) retains its existing ID and now has explicit guidance for approachable ideas and thought experiments from Indian and global traditions. These are evergreen topics in the same balanced generation pool. History guidance separates evidence from disputed claims; myths and epics are attributed to their texts or traditions and are not presented as verified history.
+
 AI Updates, Game Industry News and Current Affairs require recent retrieved evidence when live sources are enabled (the default). Sources are PIB RSS plus up to three linked official releases, UN News RSS, GDELT Context snippets, a randomly chosen GitHub release repository, and two Steam announcement feeds (one broad/indie game and one frequently updated game). These require no paid API, search, grounding service or additional key. Only official Steam announcements are used. No general article scraping or paywall bypass is implemented.
 
 Responses, including failures, are cached for one hour and concurrent fetches are coalesced. Sources need at least 80 characters of context, a valid HTTPS link and a date within seven days; future dates beyond a five-minute clock allowance are rejected. Headline-only items are skipped. GDELT's observation date is labeled Indexed, not Published or an event date. Source outages skip affected news topics and continue evergreen generation. Endpoint status appears in authenticated `/v1/status`.
 
 Gemini receives bounded excerpts as untrusted data and may cite only supplied IDs. The backend attaches actual URLs/dates, rejects invented, mismatched or repeated references, and requires sources for news cards. The app saves references offline and shows clickable links in details. Cached news older than seven days is not offered to another device; phone cards and favorites remain readable. All summaries remain AI-generated and unverified.
 
-An updated app is needed to accept new topics and referenced cards. Existing installations seed additional topic rows without resetting cards, interests or history. Older builds reject unfamiliar IDs and nonempty references. New generation uses prompt version 5.
+An updated app is needed to accept new topics and referenced cards. Existing installations seed additional topic rows without resetting cards, interests or history. Older builds reject unfamiliar IDs and nonempty references. New generation uses prompt version 6.
 
 ## Setup
 
