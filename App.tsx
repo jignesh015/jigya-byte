@@ -16,7 +16,7 @@ import {
   View,
 } from 'react-native';
 import { NavigationBar } from 'expo-navigation-bar';
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { HeartIcon } from './src/components/HeartIcon';
 import { FavoriteBurst } from './src/components/FavoriteBurst';
 import { ReaderTransition } from './src/components/ReaderTransition';
@@ -869,16 +869,17 @@ function FavoriteCardItem({ card, onOpen, onRemove }: { card: Card; onOpen: (car
   );
 }
 function BottomNavigation({ active, onChange }: { active: Tab; onChange: (tab: Tab) => void }) {
-  const items: { id: Tab; label: string; glyph: string }[] = [
-    { id: 'feed', label: 'Feed', glyph: '▤' },
-    { id: 'favorites', label: 'Favorites', glyph: '' },
-    { id: 'analytics', label: 'Analytics', glyph: '▥' },
-    { id: 'settings', label: 'Settings', glyph: '' },
+  const items: { id: Tab; label: string }[] = [
+    { id: 'feed', label: 'Feed' },
+    { id: 'favorites', label: 'Favorites' },
+    { id: 'analytics', label: 'Analytics' },
+    { id: 'settings', label: 'Settings' },
   ];
   return (
     <View style={styles.bottomNav}>
       {items.map((item) => {
         const selected = active === item.id;
+        const iconColor = selected ? colors.accent : colors.muted;
         return (
           <Pressable
             key={item.id}
@@ -887,12 +888,23 @@ function BottomNavigation({ active, onChange }: { active: Tab; onChange: (tab: T
             onPress={() => onChange(item.id)}
             style={({ pressed }) => [styles.navItem, pressed && styles.pressed]}
           >
-            {item.id === 'favorites' ? <HeartIcon size={22} filled={selected} color={selected ? colors.accent : colors.muted} /> : item.id === 'settings' ? (
+            {item.id === 'favorites' ? <HeartIcon size={22} filled={selected} color={iconColor} /> : item.id === 'settings' ? (
               <Svg width={22} height={22} viewBox="0 0 24 24" accessible={false}>
                 <Path d="m9 3-.6 2.4-2 .9-2.2-.7-2 3.4 1.6 1.7v2.6L2.2 15l2 3.4 2.2-.7 2 .9L9 21h4l.6-2.4 2-.9 2.2.7 2-3.4-1.6-1.7v-2.6L19.8 9l-2-3.4-2.2.7-2-.9L13 3Z" fill="none" stroke={selected ? colors.accent : colors.muted} strokeWidth={1.6} strokeLinejoin="round" />
                 <Circle cx={11} cy={12} r={3} fill="none" stroke={selected ? colors.accent : colors.muted} strokeWidth={1.6} />
               </Svg>
-            ) : <Text style={[styles.navGlyph, selected && styles.navSelected]}>{item.glyph}</Text>}
+            ) : item.id === 'feed' ? (
+              <Svg width={22} height={22} viewBox="0 0 24 24" accessible={false}>
+                <Rect x={3} y={6} width={18} height={15} rx={2.5} fill="none" stroke={iconColor} strokeWidth={1.8} />
+                <Path d="M6 3h12M7 11h10M7 15h6" fill="none" stroke={iconColor} strokeWidth={1.8} strokeLinecap="round" />
+              </Svg>
+            ) : (
+              <Svg width={22} height={22} viewBox="0 0 24 24" accessible={false}>
+                <Rect x={3} y={11} width={4.5} height={10} rx={1} fill="none" stroke={iconColor} strokeWidth={1.8} />
+                <Rect x={9.75} y={7} width={4.5} height={14} rx={1} fill="none" stroke={iconColor} strokeWidth={1.8} />
+                <Rect x={16.5} y={3} width={4.5} height={18} rx={1} fill="none" stroke={iconColor} strokeWidth={1.8} />
+              </Svg>
+            )}
             <Text style={[styles.navLabel, selected && styles.navSelected]}>{item.label}</Text>
           </Pressable>
         );
@@ -1374,7 +1386,6 @@ const styles = StyleSheet.create({
   chartFootnote: { color: colors.muted, fontSize: 11, lineHeight: 17, marginTop: 23 },
   bottomNav: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: '#0c0e0e', paddingTop: 8, paddingBottom: 7 },
   navItem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, minHeight: 48 },
-  navGlyph: { color: colors.muted, fontSize: 20, lineHeight: 23 },
   navLabel: { color: colors.muted, fontSize: 11, fontWeight: '500' },
   navSelected: { color: colors.accent, fontWeight: '800' },
   errorBanner: { backgroundColor: colors.danger, paddingHorizontal: 16, paddingVertical: 10 },
