@@ -21,6 +21,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   if (mode !== 'ai-only') throw new Error('Only Gemini AI-only card generation is supported');
   const token = env.BACKEND_DEVICE_TOKEN ?? '';
   const thinkingLevel = env.GEMINI_THINKING_LEVEL || undefined;
+  const geminiFallbackModels = [env.GEMINI_FALLBACK_MODEL?.trim(), ...(env.GEMINI_FALLBACK_MODELS?.split(',').map(model => model.trim()) ?? [])].filter((model): model is string => !!model);
   if (thinkingLevel && !['low', 'medium', 'high'].includes(thinkingLevel)) throw new Error('Invalid GEMINI_THINKING_LEVEL');
   if (token.length < 32) throw new Error('BACKEND_DEVICE_TOKEN must contain at least 32 characters');
   const config = {
@@ -29,7 +30,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     mode: 'ai-only' as const,
     key: env.GEMINI_API_KEY,
     model: env.GEMINI_MODEL,
-    geminiFallbackModel: env.GEMINI_FALLBACK_MODEL || undefined,
+    geminiFallbackModels,
     freeConfirmed: boolean('GEMINI_FREE_TIER_CONFIRMED'), paid: boolean('ALLOW_PAID_CALLS'),
     requestLimit: integer('DAILY_REQUEST_LIMIT', 10), tokenLimit: integer('DAILY_TOKEN_LIMIT', 50000, 0, 1e9),
     costLimit: number('DAILY_COST_LIMIT', 0), requestCost: number('MAX_REQUEST_COST', 0),
@@ -47,8 +48,10 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   if (provider !== 'disabled' && !(config.paid ? config.costLimit > 0 && config.requestCost > 0 : provider === 'gemini' && config.freeConfirmed)) {
     throw new Error('Provider activation requires confirmed Gemini free tier or approved paid budget and maximum request cost');
   }
-  if (config.geminiFallbackModel && (provider !== 'gemini' || !/^[a-zA-Z0-9_.-]+$/.test(config.geminiFallbackModel) || config.geminiFallbackModel === config.model)) {
-    throw new Error('Invalid GEMINI_FALLBACK_MODEL');
+  if (geminiFallbackModels.length && (provider !== 'gemini' || geminiFallbackModels.length > 7 ||
+    geminiFallbackModels.some(model => !/^[a-zA-Z0-9_.-]+$/.test(model) || model === config.model) ||
+    new Set(geminiFallbackModels).size !== geminiFallbackModels.length)) {
+    throw new Error('Invalid GEMINI_FALLBACK_MODELS');
   }
   return config;
 }
@@ -61,7 +64,7 @@ export function generationBatchSize(config: Config): number {
 
 // Only explicitly configured routes participate; adding a secret never enables spending.
 export function providerRoutes(config: Config): Config[] {
-  return [config, ...(config.provider === 'gemini' && config.geminiFallbackModel
-    ? [{ ...config, model: config.geminiFallbackModel }]
+  return [config, ...(config.provider === 'gemini'
+    ? config.geminiFallbackModels.map(model => ({ ...config, model }))
     : [])];
 }

@@ -94,7 +94,8 @@ export class Worker {
       const ambiguous = code === 'upstream_timeout_or_network';
       const retryable = providerFailure && (!ambiguous || job.provider_index + 1 < routes.length);
       const nextRoute = providerFailure && job.provider_index + 1 < routes.length;
-      if (retryable && job.attempts < 2 && (!providerFailure || routes.length === 1 || nextRoute)) {
+      // Walk each configured route once; retain three attempts for a single-model setup.
+      if (retryable && (nextRoute || (routes.length === 1 && job.attempts < 2))) {
         const wait = Math.max(10000 * 2 ** job.attempts + Math.random() * 1000, error instanceof Failure ? error.retryAfter : 0);
         if (nextRoute) this.store.db.prepare('UPDATE jobs SET provider_index=provider_index+1 WHERE id=?').run(job.id);
         this.store.markJob(job.id, 'queued', code, Date.now() + wait);

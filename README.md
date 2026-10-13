@@ -42,7 +42,7 @@ Keep provider credentials in `backend/.env`; use `backend/env.example` as a temp
 npm run backend
 ```
 
-The configured fallback chain is Gemini 3.8 Flash followed by Gemini 3.6 Flash. A model failure can advance once to the fallback; each attempt uses the existing local request and token budget. Paid calls remain disabled. Retry does not reset daily usage.
+The configured fallback chain is Gemini 3.8 Flash → Gemini 3.6 Flash → Gemini 3.5 Flash-Lite → Gemini 3.1 Flash-Lite. Retryable model failures advance through the chain after bounded backoff, trying each model once. Each attempt uses the shared local budget of 30 requests and 725,760 reserved tokens per UTC day. Paid calls remain disabled. Retry does not reset daily usage.
 
 ## Local data and checks
 

@@ -111,6 +111,91 @@ test('Gemini fallback configuration is explicit and validated', () => {
   const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate' });
   assert.deepEqual(providerRoutes(cfg).map(c => c.model), ['mock-model', 'alternate']);
   assert.throws(() => liveConfig({ GEMINI_FALLBACK_MODEL: 'mock-model' }), /FALLBACK_MODEL/);
+  assert.deepEqual(providerRoutes(liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', GEMINI_FALLBACK_MODELS: ' lite-one, lite-two ' })).map(c => c.model), ['mock-model', 'alternate', 'lite-one', 'lite-two']);
+  assert.deepEqual(providerRoutes(liveConfig({ GEMINI_FALLBACK_MODELS: 'lite-one,lite-two' })).map(c => c.model), ['mock-model', 'lite-one', 'lite-two']);
+  for (const models of ['mock-model', 'alternate,alternate', 'bad/model', Array.from({ length: 8 }, (_, i) => `model-${i}`).join(',')]) {
+    assert.throws(() => liveConfig({ GEMINI_FALLBACK_MODELS: models }), /FALLBACK_MODELS/);
+  }
+  assert.throws(() => liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', GEMINI_FALLBACK_MODELS: 'alternate' }), /FALLBACK_MODELS/);
+});
+
+test('four-model HTTP fallback reaches the last route, attributes cards and reserves every attempt', async () => {
+  for (const lastSucceeds of [true, false]) {
+    const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', GEMINI_FALLBACK_MODELS: 'lite-one,lite-two',
+      GENERATION_BATCH_SIZE: '1', DAILY_REQUEST_LIMIT: '30', DAILY_TOKEN_LIMIT: '725760' });
+    const store = new Store(':memory:'); store.sync(inventory(), cfg); const calls: string[] = [];
+    const generateFor = (route: typeof cfg) => cloudGenerator(route, async (url, options) => {
+      assert.equal(url, `https://generativelanguage.googleapis.com/v1beta/models/${route.model}:generateContent`);
+      const body = JSON.parse(options!.body as string);
+      assert.equal(body.generationConfig.responseMimeType, 'application/json');
+      assert.ok(body.generationConfig.responseJsonSchema);
+      calls.push(route.model!);
+      if (route.model !== 'lite-two' || !lastSucceeds) return Response.json({ error: { status: 'UNAVAILABLE', message: 'High demand' } }, { status: 503 });
+      return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({ cards: [{ title: 'Orbital resonance', summary: 'Repeated gravitational tugs', explanation: 'Orbital periods can form simple ratios.', primaryTopicId: 'space', topicIds: ['space'] }] }) }] } }] });
+    });
+    const worker = new Worker(cfg, store, generateFor(cfg), generateFor);
+    try {
+      for (let index = 0; index < 4; index++) {
+        await worker.tick();
+        assert.equal(store.usage().requests, index + 1);
+        if (index < 3) {
+          assert.equal(store.jobs()[0].provider_index, index + 1);
+          assert.equal(store.jobs()[0].state, 'queued');
+          assert.ok(store.jobs()[0].next_at > Date.now());
+          store.db.prepare('UPDATE jobs SET next_at=0').run();
+        }
+      }
+      await worker.tick();
+      assert.deepEqual(calls, ['mock-model', 'alternate', 'lite-one', 'lite-two']);
+      assert.equal(store.jobs()[0].attempts, 4);
+      assert.equal(store.jobs()[0].state, lastSucceeds ? 'completed' : 'failed');
+      assert.equal(JSON.parse((store.db.prepare('SELECT attempt_log FROM jobs').get() as { attempt_log: string }).attempt_log).length, 4);
+      if (lastSucceeds) assert.equal(store.cards()[0].modelId, 'lite-two');
+      else assert.equal(store.jobs()[0].error, 'upstream_unavailable');
+    } finally { store.close(); }
+  }
+});
+
+test('extended chain stops at a shared budget or terminal error, with final timeout uncertain', async () => {
+  for (const [requestLimit, lastError, expected] of [
+    ['3', 'upstream_unavailable', 'budget_exhausted'],
+    ['30', 'upstream_timeout_or_network', 'upstream_timeout_or_network'],
+    ['30', 'provider_credentials_or_access', 'provider_credentials_or_access'],
+  ]) {
+    const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', GEMINI_FALLBACK_MODELS: 'lite-one,lite-two',
+      GENERATION_BATCH_SIZE: '1', DAILY_REQUEST_LIMIT: requestLimit, DAILY_TOKEN_LIMIT: '725760' });
+    const store = new Store(':memory:'); store.sync(inventory(), cfg); const calls: string[] = [];
+    const generateFor = (route: typeof cfg) => async () => {
+      calls.push(route.model!);
+      throw new Failure(route.model === 'lite-two' ? lastError : 'upstream_unavailable');
+    };
+    const worker = new Worker(cfg, store, generateFor(cfg), generateFor);
+    try {
+      for (let i = 0; i < 5; i++) { await worker.tick(); store.db.prepare('UPDATE jobs SET next_at=0').run(); }
+      assert.equal(calls.length, requestLimit === '3' ? 3 : 4);
+      assert.equal(store.usage().requests, calls.length);
+      assert.equal(store.jobs()[0].error, expected);
+      assert.equal(store.jobs()[0].state, lastError === 'upstream_timeout_or_network' ? 'uncertain' : 'failed');
+    } finally { store.close(); }
+  }
+});
+
+test('third fallback route survives restart and does not repeat earlier models', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jigyabyte-chain-')), path = join(dir, 'test.sqlite');
+  const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', GEMINI_FALLBACK_MODELS: 'lite-one,lite-two',
+    GENERATION_BATCH_SIZE: '1', DAILY_TOKEN_LIMIT: '725760' });
+  let store = new Store(path); const calls: string[] = [];
+  const generateFor = (route: typeof cfg) => async () => { calls.push(route.model!); throw new Failure('upstream_unavailable'); };
+  try {
+    store.sync(inventory(), cfg);
+    let worker = new Worker(cfg, store, generateFor(cfg), generateFor);
+    for (let i = 0; i < 2; i++) { await worker.tick(); store.db.prepare('UPDATE jobs SET next_at=0').run(); }
+    store.close(); store = new Store(path); assert.equal(store.jobs()[0].provider_index, 2);
+    worker = new Worker(cfg, store, generateFor(cfg), generateFor);
+    for (let i = 0; i < 2; i++) { await worker.tick(); store.db.prepare('UPDATE jobs SET next_at=0').run(); }
+    assert.deepEqual(calls, ['mock-model', 'alternate', 'lite-one', 'lite-two']);
+    assert.equal(store.jobs()[0].state, 'failed'); assert.equal(store.usage().requests, 4);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('overload falls back once and successful cards identify the actual model', async () => {
