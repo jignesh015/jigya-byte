@@ -9,10 +9,12 @@ import postgres from 'postgres';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Job, Delivery } from '../../../backend/src/storage/store.ts';
 import type { ProviderDiagnostic } from '../../../backend/src/providers/cloud.ts';
+import type { ModelCooldown } from '../../../backend/src/providers/routing.ts';
+import { requestFeedback } from '../../../backend/src/jobs/feedback.ts';
 
 type Query = (query: string, args?: any[]) => Promise<any[]>;
 type ClaimedJob = Job & { claim_token: string };
-const tables = 'cards|devices|history|deliveries|jobs|usage|source_cache|topic_generation|source_usage|settings';
+const tables = 'cards|devices|history|deliveries|jobs|usage|source_cache|topic_generation|source_usage|settings|model_cooldowns';
 function dialect(query: string): string {
   const ignore = query.includes('INSERT OR IGNORE');
   query = query.replace('INSERT OR IGNORE', 'INSERT').replaceAll('rowid', 'seq');
@@ -49,6 +51,11 @@ export class PostgresStore {
     }) as T;
   }
   async close() { await this.pool.end({ timeout: 5 }); }
+  async cooldowns(): Promise<ModelCooldown[]> { return await this.db.prepare('SELECT * FROM model_cooldowns').all(); }
+  async coolModel(config: Config, reason: string, now = Date.now()) {
+    await this.db.prepare('INSERT INTO model_cooldowns VALUES (?,?,?,?) ON CONFLICT(provider,model) DO UPDATE SET failed_at=excluded.failed_at,reason=excluded.reason')
+      .run(config.provider, config.model!, now, reason);
+  }
   async ready() { return (await this.db.prepare("SELECT value FROM settings WHERE key='migration_ready'").get())?.value === 'true'; }
   async claim(): Promise<ClaimedJob | null> {
     return await this.transaction(async () => {
@@ -71,7 +78,7 @@ export class PostgresStore {
   }
   async diagnostic(job: ClaimedJob, diagnostic: ProviderDiagnostic) {
     await this.owned(job, async () => {
-      await this.db.prepare("UPDATE jobs SET diagnostics=?,attempt_log=((attempt_log::jsonb)||(?::jsonb))::text WHERE id=?")
+      await this.db.prepare("UPDATE jobs SET diagnostics=?,attempt_log=((attempt_log::jsonb)||(?::text::jsonb))::text WHERE id=?")
         .run(JSON.stringify(diagnostic), JSON.stringify([diagnostic]), job.id);
     });
   }
@@ -245,6 +252,9 @@ async sync(s: Snapshot, config: Config) {
             cards: pending ? JSON.parse(pending.cards) as Card[] : [], acknowledgedEventIds: s.historyEvents.map(e => e.eventId),
             reportedUnread: s.counts.unread, refillJobId: job?.id ?? null,
             refillReason: job?.error ?? last?.error ?? null,
+            usage: await this.usage(), limits: { requests: config.requestLimit },
+            retryJobId: !job && last?.state === 'failed' ? last.id : job?.state === 'uncertain' ? job.id : null,
+            notification: requestFeedback(config, !!pending || !deficit, job, job?.error ?? last?.error),
             refillState: pending || !deficit ? 'ready' : job ? (job.state === 'uncertain' ? 'degraded' : 'pending') :
                 last?.error === 'budget_exhausted' ? 'budget_exhausted' : last?.error === 'quota_exhausted' ? 'quota_exhausted' : config.provider === 'disabled' ? 'disabled' : 'degraded' };
     });

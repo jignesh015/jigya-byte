@@ -9,6 +9,7 @@ import { LiveSources, NEWS_TOPICS } from '../sources/live.ts';
 import type { Evidence } from '../sources/live.ts';
 import { distributedTopics } from '../preparation/topics.ts';
 import { randomInt } from 'node:crypto';
+import { availableRoute, cooldownEnds } from '../providers/routing.ts';
 
 export class Worker {
   config: Config; store: Store; generate: Generate; active = 0; stopped = false;
@@ -27,7 +28,17 @@ export class Worker {
     // Claim before awaiting generation to keep timer invocations single-flight.
     this.store.markJob(job.id, 'running');
     let dispatched = false;
-    const routes = providerRoutes(this.config), selected = routes[job.provider_index];
+    const routes = providerRoutes(this.config);
+    const cooldowns = this.store.cooldowns();
+    const index = availableRoute(routes, cooldowns, job.provider_index);
+    if (index < 0) {
+      this.store.db.prepare('UPDATE jobs SET provider_index=0 WHERE id=?').run(job.id);
+      this.store.markJob(job.id, 'queued', 'model_cooldown', cooldownEnds(routes, cooldowns));
+      this.active--; return;
+    }
+    job.provider_index = index;
+    this.store.db.prepare('UPDATE jobs SET provider_index=? WHERE id=?').run(index, job.id);
+    const selected = routes[index];
     try {
       if (!selected) throw new Failure('provider_configuration');
       this.store.expireNews(this.config.liveSources);
@@ -88,15 +99,19 @@ export class Worker {
       this.store.markJob(job.id, 'completed');
     } catch (error) {
       const code = error instanceof Failure ? error.code : 'preparation_failed';
-      // Bad output and incomplete responses must not burn more requests automatically.
-      const providerFailureCodes = ['quota_exhausted', 'upstream_unavailable', 'upstream_timeout_or_network', 'provider_configuration'];
+      // Try the next model once for model-specific failures; shared credentials remain terminal.
+      const providerFailureCodes = ['quota_exhausted', 'upstream_unavailable', 'upstream_timeout_or_network', 'provider_configuration',
+        'provider_refused_or_incomplete', 'invalid_provider_output', 'invalid_upstream_json', 'empty_upstream_response',
+        'upstream_response_too_large', 'duplicate_generation', 'preparation_failed'];
       const providerFailure = dispatched && providerFailureCodes.includes(code);
+      if (dispatched) this.store.coolModel(selected, code);
       const ambiguous = code === 'upstream_timeout_or_network';
       const retryable = providerFailure && (!ambiguous || job.provider_index + 1 < routes.length);
       const nextRoute = providerFailure && job.provider_index + 1 < routes.length;
-      // Walk each configured route once; retain three attempts for a single-model setup.
-      if (retryable && (nextRoute || (routes.length === 1 && job.attempts < 2))) {
-        const wait = Math.max(10000 * 2 ** job.attempts + Math.random() * 1000, error instanceof Failure ? error.retryAfter : 0);
+      // Walk each configured route once. Never retry a cooling model.
+      if (retryable && nextRoute) {
+        // A model-specific Retry-After must not delay a different model.
+        const wait = 10000 + Math.random() * 1000;
         if (nextRoute) this.store.db.prepare('UPDATE jobs SET provider_index=provider_index+1 WHERE id=?').run(job.id);
         this.store.markJob(job.id, 'queued', code, Date.now() + wait);
       } else {

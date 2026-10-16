@@ -1,4 +1,20 @@
-# Deployment evidence, 2026-10-13
+# Deployment evidence, 2026-10-14
+
+App follow-up, 2026-10-14: automatic successful syncs with no imported cards no longer produce a library-up-to-date toast. Manual refresh retains confirmation; automatic new-card deliveries show only the added-card message. App typecheck and lifecycle/fixture integration checks passed. Updated ARM64 APK SHA256 `3b38a614e3417326b03a4a0dbdaa7ba118dcece874d30a3bfc244b3120739462` was installed in place on Samsung `R5CT2370GBT` and launched. The backend deployment below is unchanged.
+
+Verified current rollout:
+
+- Applied the private `model_cooldowns` migration and deployed both updated functions. Cards, device snapshots, delivery/ACK state and usage reservations were preserved.
+- Enabled the one-minute due-job worker schedule with the existing Vault credential. Its SQL calls the worker only for due queued jobs or expired running leases; idle ticks do not invoke a function. The schedule is confirmed active and execution succeeded. Paid calls remain disabled; global caps remain 30 attempts and 725,760 reserved tokens per UTC day.
+- Hosted compact authenticated handshake returned HTTP 200 with a 235-byte body, compared with 30,670 bytes for full diagnostic status. Phone traffic now uses the compact route on foreground/resume, every five minutes while active and manual refresh; card/history sync reuses that handshake. Pending generation polls once per minute.
+- Live job 47 received HTTP 503 from Flash 3.8 and Flash 3.6, persisted both one-hour cooldowns, then completed on Flash-Lite 3.5. New jobs 48 and 49 each dispatched only one attempt at route 2, skipping both cooling models. Their original failure timestamps remained unchanged. Live generation cost recorded as zero.
+- Backend regressions: 44 passed. Cloud/Postgres regressions: 6 passed, including cooldown persistence, no budget charged for skips, compact status, fencing and diagnostic object serialization. App/backend typechecks, cloud runtime checks, app data/feed/lifecycle/HTTP fixture checks and publication audit passed.
+- Final ARM64 APK built at `artifacts/JigyaByte.apk`, SHA256 `ea08d31c7335ebd7a7cdfb3747c9a2805a574db75867266d36b62427a277d069`. Installed in place on Samsung `R5CT2370GBT` and launched. Existing phone data remains intact.
+- Phone checks confirmed global top toast over Settings, Favorites and Analytics; tapping leaves it visible; left and right swipes dismiss it. Manual refresh showed the rotating icon and a subsequent stopped/enabled button, updated daily usage and a friendly new-card response. Hosted generated cards arrived on the phone. Duplicate refresh locking, background timer cancellation, failure messages and last-handshake color were verified with controlled app lifecycle fixtures; no forced phone network outage was used.
+
+The earlier pending cron/live-generation/APK-install items below are historical and superseded by this rollout. Extended offline, all-screen accessibility and five-minute physical heartbeat acceptance remain manual checks; controlled tests establish the timer and cancellation logic.
+
+## Initial migration evidence, 2026-10-13
 
 Project `fuomvvzgdhleikztdpgz` (`jigya-byte`, Mumbai/ap-south-1) was verified ACTIVE_HEALTHY through the authenticated CLI.
 

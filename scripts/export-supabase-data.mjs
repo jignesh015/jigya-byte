@@ -16,14 +16,15 @@ const output=resolve('artifacts/supabase-cutover');
 if(!existsSync(source)) throw new Error('Backend database is missing');
 const db=new DatabaseSync(source,{readOnly:true});
 try {
-  if(db.prepare('PRAGMA user_version').get().user_version!==7) throw new Error('Expected backend schema 7');
+  const version=db.prepare('PRAGMA user_version').get().user_version;
+  if(![7,8].includes(version)) throw new Error('Expected backend schema 7 or 8');
   mkdirSync(output,{recursive:true});
   const tag=randomUUID().replaceAll('-','');
   // SQLite snapshot includes committed WAL pages; copying the main file alone would lose them.
   const backup=resolve(output,`backend-${tag}.sqlite`);
   db.exec(`VACUUM INTO '${backup.replaceAll("'","''")}'`);
   const quoted=value=>value===null?'NULL':typeof value==='number'?String(value):`$jb_${tag}$${value}$jb_${tag}$`;
-  const tables=['cards','devices','history','deliveries','jobs','usage','source_cache','topic_generation','source_usage'];
+  const tables=['cards','devices','history','deliveries','jobs','usage','source_cache','topic_generation','source_usage',...(version>=8?['model_cooldowns']:[])];
   const sql=['BEGIN;','SELECT pg_advisory_xact_lock(431913);',
     "DO $$ BEGIN IF (SELECT value FROM jigyabyte.settings WHERE key='migration_ready') IS DISTINCT FROM 'false' OR EXISTS(SELECT 1 FROM jigyabyte.devices) OR EXISTS(SELECT 1 FROM jigyabyte.usage) OR EXISTS(SELECT 1 FROM jigyabyte.cards) THEN RAISE EXCEPTION 'Target must be a fresh, unactivated cloud backend'; END IF; END $$;"];
   const counts={};

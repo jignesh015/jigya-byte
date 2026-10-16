@@ -9,7 +9,9 @@ export type Inventory = { protocolVersion: 1; deviceId: string; inventoryVersion
   historyEvents: HistoryEvent[]; pendingDeliveryIds: string[] };
 export type DeliveryAck = { acceptedIds: string[]; rejectedIds: string[]; inventory: Inventory };
 export type SyncReply = { protocolVersion: 1; deliveryId: string | null; forInventoryVersion: number; cards: unknown[];
-  acknowledgedEventIds: string[]; refillJobId: string | null; reportedUnread: number; refillState: string; refillReason?: string | null };
+  acknowledgedEventIds: string[]; refillJobId: string | null; reportedUnread: number; refillState: string; refillReason?: string | null;
+  retryJobId?: string | null; usage?: { requests: number }; limits?: { requests: number };
+  notification?: { code: string; kind: string; message: string; model?: string; retryAt?: string } };
 const normalize = (v: string) => v.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 function text(v: unknown, max: number): v is string { return typeof v === 'string' && v.trim().length > 0 && v.length <= max; }
 function validSource(value: unknown): value is SourceRef {

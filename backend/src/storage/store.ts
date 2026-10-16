@@ -8,6 +8,8 @@ import type { Config } from '../config.ts';
 import { nearDuplicate } from '../preparation/cards.ts';
 import { generationBatchSize } from '../config.ts';
 import { NEWS_TOPICS } from '../sources/live.ts';
+import type { ModelCooldown } from '../providers/routing.ts';
+import { requestFeedback } from '../jobs/feedback.ts';
 
 export type Job = { id: string; device_id: string; count: number; state: string; attempts: number; provider_index: number; diagnostics: string | null; next_at: number; error: string | null };
 export type Delivery = { id: string; device_id: string; version: number; cards: string; state: string; result: string | null };
@@ -18,7 +20,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 7) throw new Error('Unsupported backend database version');
+    if (version > 8) throw new Error('Unsupported backend database version');
     if (!version) this.db.exec(`BEGIN;
       CREATE TABLE cards(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, fingerprint TEXT UNIQUE NOT NULL, body TEXT NOT NULL);
       CREATE TABLE devices(id TEXT PRIMARY KEY, version INTEGER NOT NULL, snapshot TEXT NOT NULL);
@@ -50,6 +52,9 @@ export class Store {
       CREATE TABLE topic_generation(topic TEXT PRIMARY KEY, count INTEGER NOT NULL);
       CREATE TABLE source_usage(id TEXT PRIMARY KEY);
       PRAGMA user_version=7; COMMIT;`);
+    if (version < 8) this.db.exec(`BEGIN;
+      CREATE TABLE IF NOT EXISTS model_cooldowns(provider TEXT NOT NULL, model TEXT NOT NULL, failed_at INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(provider,model));
+      PRAGMA user_version=8; COMMIT;`);
     // Seed old cached topics once without touching cards or reservations.
     const cached = this.cards();
     for (const topic of new Set(cached.map(c => c.primaryTopicId))) this.db.prepare('INSERT OR IGNORE INTO topic_generation VALUES (?,?)').run(topic,
@@ -64,6 +69,11 @@ export class Store {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   close() { this.db.close(); }
+  cooldowns(): ModelCooldown[] { return this.db.prepare('SELECT * FROM model_cooldowns').all() as ModelCooldown[]; }
+  coolModel(config: Config, reason: string, now = Date.now()) {
+    this.db.prepare('INSERT INTO model_cooldowns VALUES (?,?,?,?) ON CONFLICT(provider,model) DO UPDATE SET failed_at=excluded.failed_at,reason=excluded.reason')
+      .run(config.provider, config.model!, now, reason);
+  }
   cards(): Card[] { return (this.db.prepare('SELECT body FROM cards ORDER BY rowid').all() as { body: string }[]).map(r => JSON.parse(r.body)); }
   addCards(cards: Card[], limit: number) {
     let added = 0;
@@ -180,6 +190,9 @@ export class Store {
         cards: pending ? JSON.parse(pending.cards) as Card[] : [], acknowledgedEventIds: s.historyEvents.map(e => e.eventId),
         reportedUnread: s.counts.unread, refillJobId: job?.id ?? null,
         refillReason: job?.error ?? last?.error ?? null,
+        usage: this.usage(), limits: { requests: config.requestLimit },
+        retryJobId: !job && last?.state === 'failed' ? last.id : job?.state === 'uncertain' ? job.id : null,
+        notification: requestFeedback(config, !!pending || !deficit, job, job?.error ?? last?.error),
         refillState: pending || !deficit ? 'ready' : job ? (job.state === 'uncertain' ? 'degraded' : 'pending') :
           last?.error === 'budget_exhausted' ? 'budget_exhausted' : last?.error === 'quota_exhausted' ? 'quota_exhausted' : config.provider === 'disabled' ? 'disabled' : 'degraded' };
     });

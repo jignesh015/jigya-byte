@@ -8,9 +8,6 @@ begin
   if (select value from jigyabyte.settings where key='migration_ready') is distinct from 'true' then
     raise exception 'Finish data transfer before scheduling the worker';
   end if;
-  if exists(select 1 from jigyabyte.jobs where state in ('queued','running')) then
-    raise exception 'Resolve pending jobs before initial schedule activation';
-  end if;
   if not exists (select 1 from vault.decrypted_secrets where name='jigyabyte_worker_token') then
     raise exception 'Configure the worker token in Vault first';
   end if;
@@ -21,6 +18,10 @@ begin
       headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer ' ||
         (select decrypted_secret from vault.decrypted_secrets where name='jigyabyte_worker_token')),
       body := '{}'::jsonb, timeout_milliseconds := 120000
+    ) where exists (
+      select 1 from jigyabyte.jobs
+      where (state='queued' and next_at <= (extract(epoch from now())*1000)::bigint)
+         or (state='running' and lease_until <= (extract(epoch from now())*1000)::bigint)
     );
   $job$);
 end $$;

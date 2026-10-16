@@ -9,6 +9,7 @@ import type { Generate, ProviderDiagnostic } from '../../../backend/src/provider
 import { LiveSources, NEWS_TOPICS } from '../../../backend/src/sources/live.ts';
 import { distributedTopics } from '../../../backend/src/preparation/topics.ts';
 import type { PostgresStore } from './store.ts';
+import { availableRoute, cooldownEnds } from '../../../backend/src/providers/routing.ts';
 
 // One claim and at most one provider call per scheduled invocation. Backoff is durable.
 export async function runWorker(config: Config, store: PostgresStore,
@@ -16,7 +17,19 @@ export async function runWorker(config: Config, store: PostgresStore,
   if (config.provider === 'disabled' || !await store.ready()) return { state: 'disabled' };
   const job = await store.claim();
   if (!job) return { state: 'idle' };
-  const routes = providerRoutes(config), selected = routes[job.provider_index];
+  const routes = providerRoutes(config);
+  const cooldowns = await store.cooldowns();
+  const index = availableRoute(routes, cooldowns, job.provider_index);
+  if (index < 0) {
+    await store.owned(job, async () => {
+      await store.db.prepare('UPDATE jobs SET provider_index=0 WHERE id=?').run(job.id);
+      await store.finish(job, 'queued', 'model_cooldown', cooldownEnds(routes, cooldowns));
+    });
+    return { state: 'cooldown' };
+  }
+  job.provider_index = index;
+  await store.owned(job, async () => { await store.db.prepare('UPDATE jobs SET provider_index=? WHERE id=?').run(index, job.id); });
+  const selected = routes[index];
   let dispatched = false;
   const diagnostics: ProviderDiagnostic[] = [];
   try {
@@ -81,12 +94,15 @@ export async function runWorker(config: Config, store: PostgresStore,
   } catch (error) {
     const code=error instanceof Failure ? error.code : 'preparation_failed';
     if (code==='job_lease_lost') return {state:'uncertain'};
-    const retryable=dispatched && ['quota_exhausted','upstream_unavailable','upstream_timeout_or_network','provider_configuration'].includes(code);
+    const retryable=dispatched && ['quota_exhausted','upstream_unavailable','upstream_timeout_or_network','provider_configuration',
+      'provider_refused_or_incomplete','invalid_provider_output','invalid_upstream_json','empty_upstream_response',
+      'upstream_response_too_large','duplicate_generation','preparation_failed'].includes(code);
     const nextRoute=job.provider_index+1<routes.length;
     await store.owned(job,async () => {
       for (const diagnostic of diagnostics) await store.diagnostic(job,diagnostic);
-      if (retryable && (nextRoute || (routes.length===1 && job.attempts<2 && code!=='upstream_timeout_or_network'))) {
-        const wait=Math.max(10000*2**job.attempts+Math.random()*1000,error instanceof Failure ? error.retryAfter : 0);
+      if (dispatched) await store.coolModel(selected, code);
+      if (retryable && nextRoute) {
+        const wait=10000+Math.random()*1000;
         await store.finish(job,'queued',code,Date.now()+wait,nextRoute);
       } else await store.finish(job,code==='upstream_timeout_or_network' ? 'uncertain' : 'failed',code);
     });

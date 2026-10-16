@@ -23,7 +23,7 @@ function routeName(path: string): string {
   if (/^\/v1\/deliveries\/[^/]+\/ack$/.test(path)) return '/v1/deliveries/:id/ack';
   if (/^\/v1\/jobs\/[^/]+\/retry$/.test(path)) return '/v1/jobs/:id/retry';
   if (/^\/v1\/jobs\/[^/]+$/.test(path)) return '/v1/jobs/:id';
-  if (['/health', '/v1/status', '/v1/sync', '/v1/history/batches'].includes(path)) return path;
+  if (['/health', '/v1/status', '/v1/connection', '/v1/sync', '/v1/history/batches'].includes(path)) return path;
   return '/unmatched';
 }
 function record(value: unknown): Record<string, unknown> {
@@ -116,6 +116,11 @@ export function createBackend(config: Config, store = new Store(config.database)
       if (request.method === 'GET' && url.pathname === '/health') { send(200, { service: 'JigyaByte', protocolVersion: 1, ready: true }); return; }
       const auth = Buffer.from(request.headers.authorization ?? ''), expected = Buffer.from(`Bearer ${config.token}`);
       if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) throw new Failure('unauthorized', 401);
+      if (request.method === 'GET' && url.pathname === '/v1/connection') {
+        send(200, { protocolVersion: 1, provider: config.provider, model: config.model, contentMode: config.mode,
+          usage: store.usage(), usageDay: new Date().toISOString().slice(0, 10), limits: { requests: config.requestLimit },
+          retryUncertainAllowed: config.provider === 'gemini' && config.freeConfirmed && !config.paid }); return;
+      }
       if (request.method === 'GET' && url.pathname === '/v1/status') {
         const routes = providerRoutes(config), uncertain = store.jobs().filter(job => job.state === 'uncertain');
         const freeRetryRoute = (index: number) => routes[index]?.provider === 'gemini' && routes[index].freeConfirmed && !routes[index].paid;
@@ -123,6 +128,7 @@ export function createBackend(config: Config, store = new Store(config.database)
           contentMode: config.mode, cacheCards: store.cards().length, usage: store.usage(),
           retryUncertainAllowed: uncertain.length ? uncertain.every(job => freeRetryRoute(job.provider_index) && (!job.diagnostics || JSON.parse(job.diagnostics).provider === 'gemini')) : freeRetryRoute(0),
           fallbackChain: routes.map(route => ({ provider: route.provider, model: route.model })),
+          modelCooldowns: store.cooldowns(),
           limits: { requests: config.requestLimit, reservedTokens: config.tokenLimit, reservedCost: config.costLimit },
           generation: { maxCardsPerRequest: generationBatchSize(config), deliveryBatch: 10, topicSelection: 'random-balanced', liveSourcesEnabled: config.liveSources },
           sources: jobs.live.status,

@@ -11,6 +11,10 @@ export async function handleApi(request:Request,config:Config,store:PostgresStor
     const path=pathname.replace(/^\/(?:functions\/v1\/)?jigyabyte-api(?=\/|$)/,'') || '/';
     if(request.method==='GET' && path==='/health') return json({service:'JigyaByte',protocolVersion:1,ready:await store.ready()});
     authorize(request,config.token);
+    if(request.method==='GET' && path==='/v1/connection') return json({protocolVersion:1,provider:config.provider,
+      model:config.model,contentMode:config.mode,migrationReady:await store.ready(),
+      usage:await store.usage(),usageDay:new Date().toISOString().slice(0,10),limits:{requests:config.requestLimit},
+      retryUncertainAllowed:config.provider==='gemini'&&config.freeConfirmed&&!config.paid});
     if(request.method==='GET' && path==='/v1/status') {
       const routes=providerRoutes(config),jobs=await store.jobs(),uncertain=jobs.filter(j=>j.state==='uncertain');
       const free=(i:number)=>routes[i]?.provider==='gemini' && routes[i].freeConfirmed && !routes[i].paid;
@@ -18,6 +22,7 @@ export async function handleApi(request:Request,config:Config,store:PostgresStor
         migrationReady:await store.ready(),cacheCards:(await store.cards()).length,usage:await store.usage(),
         retryUncertainAllowed:uncertain.length?uncertain.every(j=>free(j.provider_index)&&(!j.diagnostics||JSON.parse(j.diagnostics).provider==='gemini')):free(0),
         fallbackChain:routes.map(r=>({provider:r.provider,model:r.model})),
+        modelCooldowns:await store.cooldowns(),
         limits:{requests:config.requestLimit,reservedTokens:config.tokenLimit,reservedCost:config.costLimit},
         generation:{maxCardsPerRequest:generationBatchSize(config),deliveryBatch:10,topicSelection:'random-balanced',liveSourcesEnabled:config.liveSources},
         sources:JSON.parse((await store.db.prepare("SELECT value FROM settings WHERE key='last_source_status'").get())?.value ?? '[]'),

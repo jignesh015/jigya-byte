@@ -7,6 +7,7 @@ import {
   Dimensions,
   Easing,
   Linking,
+  PanResponder,
   Pressable,
   ScrollView,
   StatusBar,
@@ -62,7 +63,7 @@ const colors = {
 
 type Tab = 'feed' | 'favorites' | 'analytics' | 'settings';
 type AppView = 'main' | 'detail' | 'interests';
-type DiscoveryNotice = { kind: 'success' | 'offline' | 'error'; message: string; state?: string; added?: number } | null;
+type DiscoveryNotice = { kind: 'success' | 'info' | 'offline' | 'error'; message: string; state?: string; added?: number } | null;
 
 const metricLabels: Record<AnalyticsMetric, string> = {
   seen: 'Seen',
@@ -84,43 +85,63 @@ function FloatingDiscoveryToast({ notice, reducedMotion, onDismiss }: {
   onDismiss: () => void;
 }) {
   const slide = useRef(new Animated.Value(1)).current;
-  const [toastHeight, setToastHeight] = useState(200);
-  const [dismissing, setDismissing] = useState(false);
+  const horizontal = useRef(new Animated.Value(0)).current;
+  const dismissing = useRef(false);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+  const width = Dimensions.get('window').width;
+  const dismiss = useCallback((direction: number) => {
+    if (dismissing.current) return;
+    dismissing.current = true;
+    Animated.timing(horizontal, { toValue: direction * width, duration: reducedMotion ? 0 : 180,
+      easing: Easing.out(Easing.quad), useNativeDriver: true }).start(({ finished }) => { if (finished) onDismissRef.current(); });
+  }, [horizontal, reducedMotion, width]);
+  const responder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2,
+    onPanResponderMove: (_, gesture) => { if (!dismissing.current) horizontal.setValue(gesture.dx); },
+    onPanResponderRelease: (_, gesture) => {
+      if (Math.abs(gesture.dx) > 60 || Math.abs(gesture.vx) > 0.5 && Math.abs(gesture.dx) > 15) dismiss(gesture.dx < 0 ? -1 : 1);
+      else Animated.spring(horizontal, { toValue: 0, useNativeDriver: true }).start();
+    },
+    onPanResponderTerminate: () => Animated.spring(horizontal, { toValue: 0, useNativeDriver: true }).start(),
+  }), [dismiss, horizontal]);
 
   useEffect(() => {
-    setDismissing(false);
+    dismissing.current = false;
+    horizontal.stopAnimation(); horizontal.setValue(0);
     slide.setValue(1);
     Animated.timing(slide, {
       toValue: 0, duration: reducedMotion ? 0 : 220,
       easing: Easing.out(Easing.cubic), useNativeDriver: true,
     }).start();
-    return () => slide.stopAnimation();
-  }, [notice, reducedMotion, slide]);
+    return () => { slide.stopAnimation(); horizontal.stopAnimation(); };
+  }, [notice, reducedMotion, slide, horizontal]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => dismiss(1), 5000);
+    return () => clearTimeout(timeout);
+  }, [dismiss, notice]);
 
   return (
     <Animated.View
       style={[styles.discoveryToast, {
-        transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [0, toastHeight + 32] }) }],
+        transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [0, -140] }) }],
         opacity: slide.interpolate({ inputRange: [0, 0.85, 1], outputRange: [1, 1, 0] }),
       }]}
-      onLayout={(event) => setToastHeight(event.nativeEvent.layout.height)}
     >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${notice.message} Tap to dismiss`}
+      <Animated.View
+        {...responder.panHandlers}
+        accessible
+        accessibilityLabel={`${notice.message} Swipe left or right to dismiss`}
         accessibilityLiveRegion="polite"
-        disabled={dismissing}
-        onPress={() => {
-          setDismissing(true);
-          Animated.timing(slide, {
-            toValue: 1, duration: reducedMotion ? 0 : 160,
-            easing: Easing.in(Easing.quad), useNativeDriver: true,
-          }).start(({ finished }) => { if (finished) onDismiss(); });
-        }}
-        style={[styles.providerNotice, notice.kind !== 'success' && styles.providerNoticeOffline]}
+        accessibilityActions={[{ name: 'dismiss', label: 'Dismiss notification' }]}
+        onAccessibilityAction={event => { if (event.nativeEvent.actionName === 'dismiss') dismiss(1); }}
+        style={[styles.providerNotice, (notice.kind === 'error' || notice.kind === 'offline') && styles.providerNoticeOffline,
+          { transform: [{ translateX: horizontal }], opacity: horizontal.interpolate({ inputRange: [-width, 0, width], outputRange: [0, 1, 0] }) }]}
       >
         <Text style={styles.providerNoticeText}>{notice.message}</Text>
-      </Pressable>
+        <Text style={styles.providerNoticeHint}>Swipe to dismiss</Text>
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -644,11 +665,29 @@ function InterestsScreen({
   );
 }
 
-function SettingsScreen({ onOpenInterests, backendStatus, unread, onRefresh }: {
+function RefreshIcon({ busy, reducedMotion }: { busy: boolean; reducedMotion: boolean }) {
+  const rotation = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    rotation.setValue(0);
+    if (!busy || reducedMotion) return;
+    const animation = Animated.loop(Animated.timing(rotation, { toValue: 1, duration: 1000, easing: Easing.linear, useNativeDriver: true }));
+    animation.start();
+    return () => { animation.stop(); rotation.setValue(0); };
+  }, [busy, reducedMotion, rotation]);
+  if (busy && reducedMotion) return <ActivityIndicator color={colors.accent} size="small" />;
+  return <Animated.View style={{ transform: [{ rotate: rotation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] }) }] }}>
+    <Svg width={20} height={20} viewBox="0 0 24 24" accessible={false}>
+      <Path d="M3 12a9 9 0 0 1 15.36-6.36L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.36 6.36L3 16M8 16H3v5" fill="none" stroke={colors.accent} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  </Animated.View>;
+}
+
+function SettingsScreen({ onOpenInterests, backendStatus, unread, onRefresh, reducedMotion }: {
   onOpenInterests: () => void;
   backendStatus: BackendStatus;
   unread: number;
   onRefresh: () => void;
+  reducedMotion: boolean;
 }) {
   const connected = backendStatus.connection === 'connected';
   const lastConnected = backendStatus.lastHandshakeAt
@@ -671,16 +710,21 @@ function SettingsScreen({ onOpenInterests, backendStatus, unread, onRefresh }: {
         <View accessible accessibilityLabel={connected ? 'Backend connected' : backendStatus.connection === 'disabled' ? 'Backend not configured' : 'Backend disconnected'} style={[styles.connectionGlow, connected ? styles.connectionGlowConnected : styles.connectionGlowOffline]}>
           <View style={[styles.connectionDot, connected ? styles.connectionDotConnected : styles.connectionDotOffline]} />
         </View>
-        <View style={styles.connectionPill} accessible accessibilityLabel={backendStatus.lastHandshakeAt ? `Last successful connection ${new Date(backendStatus.lastHandshakeAt).toLocaleString()}` : 'No successful connection yet'}>
-          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2} style={styles.connectionPillText}>{lastConnected ? `Last ${lastConnected}` : 'Never connected'}</Text>
+        <View style={styles.connectionStats}>
+          <View style={styles.connectionStatRow}>
+            <View style={styles.connectionPill} accessible accessibilityLabel={backendStatus.lastHandshakeAt ? `Last successful connection ${new Date(backendStatus.lastHandshakeAt).toLocaleString()}` : 'No successful connection yet'}>
+              <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2} style={styles.connectionPillText}>{lastConnected ? `Last ${lastConnected}` : 'Never connected'}</Text>
+            </View>
+            <View style={styles.connectionPill} accessible accessibilityLabel={`${unread} unread cards saved locally`}>
+              <Text numberOfLines={1} style={styles.connectionPillText}>{unread} unread</Text>
+            </View>
+          </View>
+          <View style={[styles.connectionPill, styles.dailyUsagePill]} accessible accessibilityLabel={backendStatus.dailyRequests ? `${backendStatus.dailyRequests.used} of ${backendStatus.dailyRequests.total} daily generation requests used. Resets at midnight UTC.` : 'Daily request usage unavailable'}>
+            <Text style={styles.connectionPillText}>{backendStatus.dailyRequests ? `${backendStatus.dailyRequests.used}/${backendStatus.dailyRequests.total} daily requests` : 'Daily requests —'}</Text>
+          </View>
         </View>
-        <View style={styles.connectionPill} accessible accessibilityLabel={`${unread} unread cards saved locally`}>
-          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} maxFontSizeMultiplier={1.2} style={styles.connectionPillText}>{unread} unread</Text>
-        </View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Refresh backend connection and cards" onPress={onRefresh} style={({ pressed }) => [styles.connectionRefresh, pressed && styles.pressed]}>
-          <Svg width={20} height={20} viewBox="0 0 24 24" accessible={false}>
-            <Path d="M3 12a9 9 0 0 1 15.36-6.36L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.36 6.36L3 16M8 16H3v5" fill="none" stroke={colors.accent} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
-          </Svg>
+        <Pressable accessibilityRole="button" accessibilityLabel="Refresh backend connection and cards" accessibilityState={{ disabled: !!backendStatus.refreshing, busy: !!backendStatus.refreshing }} disabled={!!backendStatus.refreshing} onPress={onRefresh} style={({ pressed }) => [styles.connectionRefresh, pressed && styles.pressed]}>
+          <RefreshIcon busy={!!backendStatus.refreshing} reducedMotion={reducedMotion} />
         </Pressable>
       </View>
     </View>
@@ -990,7 +1034,14 @@ export default function App() {
 
   useEffect(() => {
     if (!ready || firstLaunch) return;
-    const sync = new BackendSync(setBackendStatus, async () => { await refreshLocalData(); });
+    let lastNotice = 0;
+    const sync = new BackendSync(status => {
+      setBackendStatus(status);
+      if (status.notification && status.notification.id !== lastNotice) {
+        lastNotice = status.notification.id;
+        setDiscoveryNotice({ kind: status.notification.kind, message: status.notification.message });
+      }
+    }, async () => { await refreshLocalData(); });
     sync.foreground(AppState.currentState === 'active');
     syncRef.current = sync;
     void getBackendSettings().then(settings => { setBackendSettings(settings); sync.configure(settings); }).catch(() => setError('Could not load the secure backend connection. Offline reading is available.'));
@@ -1116,13 +1167,8 @@ export default function App() {
     setDiscoveryBusy(true);
     setDiscoveryNotice(null);
     try {
-      const before = new Set(cards.map(card => card.id));
-      const status = await syncRef.current.refresh();
-      const refreshed = await refreshLocalData();
-      const added = refreshed.filter(card => !before.has(card.id)).length;
-      setDiscoveryNotice(added
-        ? { kind: 'success', state: status.state, added, message: `Added ${added} new card${added === 1 ? '' : 's'}. They’re saved on this device and have not been independently verified.` }
-        : { kind: status.connection === 'offline' || status.state === 'offline' ? 'error' : 'success', state: status.state, message: status.message });
+      await syncRef.current.refresh(true, true);
+      await refreshLocalData();
     } catch {
       setDiscoveryNotice({ kind: 'error', state: 'offline', message: 'Could not reach the backend right now. Your saved cards remain available offline.' });
     } finally {
@@ -1133,10 +1179,9 @@ export default function App() {
   const refreshFeed = useCallback(async () => {
     if (refreshingFeed || discoveryBusy) return;
     setRefreshingFeed(true);
-    if (backendSettings.pairingToken.length >= 32) void syncRef.current?.handshake().catch(() => {});
     try {
       await refreshLocalData();
-      if (backendSettings.enabled && syncRef.current) await syncRef.current.refresh();
+      if (backendSettings.enabled && syncRef.current) await syncRef.current.refresh(true, true);
       else setDiscoveryNotice({ kind: 'offline', message: 'Connect your Gemini backend in Settings → Topics to create new cards. Saved cards remain available offline.' });
     } catch {
       setDiscoveryNotice({ kind: 'offline', message: 'Could not refresh right now. Saved cards remain available.' });
@@ -1179,13 +1224,6 @@ export default function App() {
                     refreshing={refreshingFeed}
                     onRefresh={() => void refreshFeed()}
                   />
-                  {view === 'main' && tab === 'feed' && discoveryNotice ? (
-                    <FloatingDiscoveryToast
-                      notice={discoveryNotice}
-                      reducedMotion={reducedMotion}
-                      onDismiss={() => setDiscoveryNotice(current => current === discoveryNotice ? null : current)}
-                    />
-                  ) : null}
                 </View>
                 <View style={[styles.mainPane, tab !== 'favorites' && styles.hiddenPane]}>
                   <FavoritesScreen cards={cards} onOpen={openDetails} onFavorite={handleFavorite} />
@@ -1196,7 +1234,8 @@ export default function App() {
                 <View style={[styles.mainPane, tab !== 'settings' && styles.hiddenPane]}>
                   <SettingsScreen onOpenInterests={openInterests} backendStatus={backendStatus}
                     unread={cards.filter(card => !card.isRead).length}
-                    onRefresh={() => backendSettings.enabled ? syncRef.current?.retry() : void syncRef.current?.handshake().catch(() => {})} />
+                    reducedMotion={reducedMotion}
+                    onRefresh={() => { void syncRef.current?.refresh(true); }} />
                 </View>
               </View>
 
@@ -1239,6 +1278,10 @@ export default function App() {
               <NavigationBar style="dark" />
             </>
           )}
+          {discoveryNotice ? (
+            <FloatingDiscoveryToast notice={discoveryNotice} reducedMotion={reducedMotion}
+              onDismiss={() => setDiscoveryNotice(current => current === discoveryNotice ? null : current)} />
+          ) : null}
         </View>
       </SafeAreaView>
     </SafeAreaProvider>
@@ -1254,13 +1297,16 @@ const styles = StyleSheet.create({
   settingsOptionHint: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 5 },
   settingsOptionArrow: { color: colors.accent, fontSize: 28 },
   connectionPanel: { height: 88, flexShrink: 0, marginHorizontal: 20, marginBottom: 16, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 18, backgroundColor: colors.surface },
+  connectionStats: { flex: 1, minWidth: 0, gap: 6 },
+  dailyUsagePill: { flexGrow: 0, flexBasis: 'auto', height: 27 },
+  connectionStatRow: { flexDirection: 'row', gap: 6 },
   connectionGlow: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   connectionGlowConnected: { backgroundColor: '#74d6a025' },
   connectionGlowOffline: { backgroundColor: '#ef827825' },
   connectionDot: { width: 10, height: 10, borderRadius: 5 },
   connectionDotConnected: { backgroundColor: '#74d6a0', boxShadow: '0 0 9px 2px #74d6a080' },
   connectionDotOffline: { backgroundColor: '#ef8278', boxShadow: '0 0 9px 2px #ef827880' },
-  connectionPill: { flex: 1, minWidth: 0, height: 34, borderRadius: 17, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceRaised },
+  connectionPill: { flexGrow: 1, flexBasis: 0, minWidth: 0, minHeight: 27, borderRadius: 17, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceRaised },
   connectionPillText: { color: colors.text, fontSize: 11, fontVariant: ['tabular-nums'] },
   connectionRefresh: { width: 44, height: 44, flexShrink: 0, borderRadius: 22, borderWidth: 1, borderColor: '#c8f45a30', alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentDim },
   safeArea: { flex: 1, backgroundColor: colors.background },
@@ -1294,10 +1340,11 @@ const styles = StyleSheet.create({
   discoverTitle: { color: colors.background, fontSize: 14, fontWeight: '800' },
   discoverSubtitle: { color: '#263514', fontSize: 11, marginTop: 3 },
   discoverArrow: { color: colors.background, fontSize: 26, fontWeight: '400' },
-  discoveryToast: { position: 'absolute', left: 20, right: 20, bottom: 20, zIndex: 4, elevation: 4 },
-  providerNotice: { backgroundColor: colors.surfaceRaised, borderColor: colors.border, borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12 },
-  providerNoticeOffline: { borderColor: '#62413a', backgroundColor: colors.danger },
+  discoveryToast: { position: 'absolute', left: 16, right: 16, top: 12, zIndex: 50, elevation: 50 },
+  providerNotice: { backgroundColor: colors.surfaceRaised, borderColor: colors.border, borderLeftColor: colors.accent, borderLeftWidth: 4, borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12 },
+  providerNoticeOffline: { borderColor: '#62413a', borderLeftColor: '#ef8278', backgroundColor: colors.danger },
   providerNoticeText: { color: colors.text, fontSize: 12, lineHeight: 18 },
+  providerNoticeHint: { color: colors.muted, fontSize: 10, marginTop: 5 },
   card: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: 24, paddingTop: 30, paddingBottom: 14, justifyContent: 'space-between' },
   cardCopy: { flex: 1 },
   cardMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },

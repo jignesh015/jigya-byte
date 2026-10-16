@@ -18,7 +18,7 @@ const inventory=(unread=0,version=1)=>snapshot({protocolVersion:1,deviceId:'clou
 const raw=(n=10)=>({cards:Array.from({length:n},(_,i)=>({title:`Fixture unique${i}`,summary:`Sample unique${i}`,explanation:`Mock unique${i}`,primaryTopicId:'space',topicIds:['space']}))});
 const setup=async()=>{
   const s=new PostgresStore(url,true);
-  await s.db.prepare('TRUNCATE jigyabyte.cards,jigyabyte.devices,jigyabyte.history,jigyabyte.deliveries,jigyabyte.jobs,jigyabyte.usage,jigyabyte.source_cache,jigyabyte.topic_generation,jigyabyte.source_usage RESTART IDENTITY').run();
+  await s.db.prepare('TRUNCATE jigyabyte.cards,jigyabyte.devices,jigyabyte.history,jigyabyte.deliveries,jigyabyte.jobs,jigyabyte.usage,jigyabyte.source_cache,jigyabyte.topic_generation,jigyabyte.source_usage,jigyabyte.model_cooldowns RESTART IDENTITY').run();
   await s.db.prepare("UPDATE settings SET value='true' WHERE key='migration_ready'").run();return s;
 };
 
@@ -44,6 +44,10 @@ Deno.test('overlapping cloud workers claim once and concurrent daily reservation
     await s.sync(inventory(),config);
     const claims=await Promise.all([s.claim(),other.claim()]);assert.equal(claims.filter(Boolean).length,1);
     const job=claims.find(Boolean)!;
+    await s.diagnostic(job,{provider:'gemini',model:config.model,httpStatus:503});
+    await s.diagnostic(job,{provider:'gemini',model:config.model,httpStatus:429});
+    const diagnostics=JSON.parse((await s.job(job.id) as any).attempt_log);
+    assert.equal(diagnostics[0].httpStatus,503);assert.equal(diagnostics[1].httpStatus,429);
     const limited={...config,requestLimit:1};
     const reservations=await Promise.allSettled([s.reserveBudget(job,limited,10),other.reserveBudget(job,limited,10)]);
     assert.equal(reservations.filter(r=>r.status==='fulfilled').length,1);assert.equal((await s.usage()).requests,1);
@@ -96,4 +100,28 @@ Deno.test('cloud timeout remains uncertain and transaction rollback preserves ca
     await assert.rejects(s.transaction(async()=>{await s.addCards(prepare(raw(),config,10),500);throw new Error('rollback');}),/rollback/);
     assert.equal((await s.cards()).length,0);assert.equal((await s.usage()).requests,1);
   } finally {await s.close();}
+});
+
+Deno.test('cloud cooldowns persist across connections, skip failed layers for new jobs and pause without reserving budget',async()=>{
+  const s=await setup();const other=new PostgresStore(url,true);
+  const chain={...config,geminiFallbackModels:['second','third']};const called:string[]=[];
+  const generator=(c:typeof config)=>async()=>{called.push(c.model!);throw new Failure('quota_exhausted');};
+  try {
+    await s.sync(inventory(),chain);await runWorker(chain,s,generator);
+    const first=(await s.jobs())[0];await s.db.prepare("UPDATE jobs SET state='failed' WHERE id=?").run(first.id);
+    await other.sync({...inventory(),deviceId:'another-device'},chain);
+    await runWorker(chain,other,generator);assert.deepEqual(called,[config.model,'second']);
+    assert.equal((await s.usage()).requests,2);assert.equal((await s.cooldowns()).length,2);
+    await s.coolModel({...chain,model:'third'},'upstream_unavailable');
+    const pending=(await s.jobs())[0];await s.db.prepare('UPDATE jobs SET next_at=0 WHERE id=?').run(pending.id);
+    await runWorker(chain,s,generator);assert.equal(called.length,2);assert.equal((await s.usage()).requests,2);
+    const paused=(await s.job(pending.id))!;assert.equal(paused.state,'queued');assert.equal(paused.error,'model_cooldown');
+    assert.ok(paused.next_at>Date.now()+3500000);
+    const reply=await s.sync({...inventory(),deviceId:'another-device'},chain);
+    assert.equal(reply.notification.code,'model_cooldown');assert.equal(reply.notification.kind,'error');
+    const response=await handleApi(new Request('https://example.org/jigyabyte-api/v1/connection',{
+      headers:{Authorization:`Bearer ${config.token}`}}),chain,s);
+    const compact=await response.text();assert.ok(compact.length<512);assert.ok(!compact.includes('jobs'));
+    assert.equal(JSON.parse(compact).usage.requests,2);
+  } finally {await s.close();await other.close();}
 });

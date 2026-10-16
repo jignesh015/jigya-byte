@@ -13,6 +13,7 @@ import { cloudGenerator } from '../src/providers/cloud.ts';
 import type { ProviderDiagnostic } from '../src/providers/cloud.ts';
 import { Worker } from '../src/jobs/worker.ts';
 import { createBackend } from '../src/server.ts';
+import { availableRoute, MODEL_COOLDOWN_MS } from '../src/providers/routing.ts';
 
 const token = randomBytes(32).toString('hex');
 const config = (extra: NodeJS.ProcessEnv = {}) => readConfig({ BACKEND_DEVICE_TOKEN: token, BACKEND_DATABASE: ':memory:', LIVE_SOURCES_ENABLED: 'false', ...extra });
@@ -81,18 +82,18 @@ test('a persisted refill cycle continues from 47 through 57 to 60', () => {
   store.acknowledge(second.deliveryId!, s, second.cards.map(c => c.id), []);
   assert.equal(store.sync(s, config()).cards.length, 0); assert.equal(store.isRefilling(s.deviceId), false); store.close();
 });
-test('rate-limit retries reserve every attempt and stop after three requests', async () => {
+test('single-model quota failure cools the model; early explicit retry makes no second call', async () => {
   const cfg = liveConfig(), store = new Store(':memory:'); store.sync(inventory(), cfg); let calls = 0;
   const worker = new Worker(cfg, store, async () => { calls++; throw new Failure('quota_exhausted', 502, 5000); });
-  for (let i = 0; i < 3; i++) {
-    await worker.tick();
-    if (i < 2) {
-      assert.ok(store.jobs()[0].next_at > Date.now());
-      store.db.prepare('UPDATE jobs SET next_at=0').run();
-    }
-  }
-  await worker.tick(); assert.equal(calls, 3); assert.equal(store.usage().requests, 3);
-  assert.equal(store.sync(inventory(), cfg).refillState, 'quota_exhausted'); store.close();
+  await worker.tick();
+  assert.equal(store.sync(inventory(), cfg).refillState, 'quota_exhausted');
+  const failedAt=store.cooldowns()[0].failed_at;
+  store.markJob(store.jobs()[0].id,'queued');
+  await worker.tick(); await worker.tick();
+  assert.equal(calls, 1); assert.equal(store.usage().requests, 1);
+  assert.equal(store.jobs()[0].error, 'model_cooldown');
+  assert.equal(store.jobs()[0].next_at,failedAt+MODEL_COOLDOWN_MS);
+  assert.equal(store.cooldowns()[0].failed_at,failedAt); store.close();
 });
 test('paid reservations stop before exceeding configured maximum request cost', () => {
   const cfg = liveConfig({ ALLOW_PAID_CALLS: 'true', DAILY_COST_LIMIT: '0.1', MAX_REQUEST_COST: '0.08' });
@@ -216,14 +217,15 @@ test('overload falls back once and successful cards identify the actual model', 
   assert.equal(JSON.parse(log.attempt_log).length, 2); store.close();
 });
 
-test('fallbacks respect shared budgets; credentials, refusal and invalid output do not retry', async () => {
-  for (const code of ['upstream_unavailable', 'provider_credentials_or_access', 'provider_refused_or_incomplete', 'upstream_timeout_or_network', 'invalid_provider_output']) {
+test('fallbacks respect shared budgets; shared credential failure remains terminal', async () => {
+  for (const code of ['upstream_unavailable', 'provider_credentials_or_access', 'provider_refused_or_incomplete', 'upstream_timeout_or_network',
+    'invalid_provider_output', 'invalid_upstream_json', 'empty_upstream_response', 'upstream_response_too_large']) {
     const cfg = liveConfig({ GEMINI_FALLBACK_MODEL: 'alternate', DAILY_REQUEST_LIMIT: '1' });
     const store = new Store(':memory:'); store.sync(inventory(), cfg); let fallbackCalls = 0;
     const worker = new Worker(cfg, store, async () => { throw new Failure(code); }, () => async () => { fallbackCalls++; return {}; });
     await worker.tick(); store.db.prepare('UPDATE jobs SET next_at=0').run(); await worker.tick();
     assert.equal(fallbackCalls, 0); assert.equal(store.usage().requests, 1);
-    assert.equal(store.jobs()[0].error, ['upstream_unavailable', 'upstream_timeout_or_network'].includes(code) ? 'budget_exhausted' : code); store.close();
+    assert.equal(store.jobs()[0].error, code === 'provider_credentials_or_access' ? code : 'budget_exhausted'); store.close();
   }
 });
 
@@ -375,5 +377,34 @@ test('Gemini diagnostics retain exact overload and finish metadata without secre
   const worker = new Worker(cfg,store,cloudGenerator(cfg,async()=>Response.json({error:{status:'UNAVAILABLE',message:'High demand'}},{status:503})));
   const started=Date.now(); await worker.tick();
   const row=store.db.prepare('SELECT diagnostics,next_at,state FROM jobs').get() as {diagnostics:string;next_at:number;state:string};
-  assert.equal(JSON.parse(row.diagnostics).httpStatus,503); assert.equal(row.state,'queued'); assert.ok(row.next_at>=started+10000); assert.equal(store.usage().requests,1); store.close();
+  assert.equal(JSON.parse(row.diagnostics).httpStatus,503); assert.equal(row.state,'failed');
+  assert.ok(store.cooldowns()[0].failed_at>=started); assert.equal(store.usage().requests,1); store.close();
+});
+
+test('429 and 503 cooldowns survive restart, skip failed layers for new jobs, and expire exactly one hour after failure', async () => {
+  for (const httpStatus of [429,503]) {
+    const dir=mkdtempSync(join(tmpdir(),'jigyabyte-cooldown-')),path=join(dir,'backend.sqlite');
+    const cfg=liveConfig({GEMINI_FALLBACK_MODELS:'second,third',DAILY_TOKEN_LIMIT:'725760'});
+    let store=new Store(path);const calls:string[]=[];
+    const generator=(route:typeof cfg)=>cloudGenerator(route,async()=>{
+      calls.push(route.model!);return Response.json({error:{status:httpStatus===429?'RESOURCE_EXHAUSTED':'UNAVAILABLE'}},{status:httpStatus});
+    });
+    try {
+      store.sync(inventory(),cfg);await new Worker(cfg,store,generator(cfg),generator).tick();
+      const failedAt=store.cooldowns()[0].failed_at;
+      store.markJob(store.jobs()[0].id,'failed','fixture-finished');store.close();store=new Store(path);
+      const next={...inventory(),deviceId:'second-device'};store.sync(next,cfg);
+      const worker=new Worker(cfg,store,generator(cfg),generator);await worker.tick();
+      assert.deepEqual(calls,['mock-model','second']);
+      assert.equal(store.usage().requests,2);
+      const routes=providerRoutes(cfg);
+      assert.equal(availableRoute(routes,store.cooldowns(),0,failedAt+MODEL_COOLDOWN_MS-1),2);
+      assert.equal(availableRoute(routes,store.cooldowns(),0,failedAt+MODEL_COOLDOWN_MS),0);
+      // A later failure restarts that model's hour; skipped requests never change its timestamp.
+      store.coolModel(cfg,'quota_exhausted',failedAt+1000);
+      assert.notEqual(availableRoute(routes,store.cooldowns(),0,failedAt+MODEL_COOLDOWN_MS),0);
+      assert.equal(availableRoute(routes,store.cooldowns(),0,failedAt+1000+MODEL_COOLDOWN_MS),0);
+      assert.equal(store.usage().requests,2);
+    } finally {store.close();rmSync(dir,{recursive:true,force:true});}
+  }
 });

@@ -86,6 +86,8 @@ function load(file) {
     assert.ok(sourced.length>=50); assert.equal(sourced[0].references[0].name,'Fixture source');
     assert.equal(sourced[0].sourceUrl,sourced[0].references[0].url);
     assert.equal(store.usage().requests,0); assert.equal(latestStatus.state,'ready'); assert.ok(changed>=5);
+    assert.match(latestStatus.notification.message,/^Added \d+ new cards\./); // Actual new-card deliveries still notify.
+    assert.doesNotMatch(latestStatus.notification.message,/up to date/); // Ready confirmation belongs only to manual refresh.
     const queue=await data.getPersistentFeed(); assert.deepEqual(queue.slice(0,originalQueue.length),originalQueue);
     const unread=(await data.getCards()).filter(c=>!c.isRead).slice(0,6);
     for(const c of unread) await data.recordInteraction(c.id,'seen');
@@ -126,7 +128,7 @@ function load(file) {
     const device=(await data.getInventory()).deviceId;
     const uncertainJob=store.queue(device,5); store.markJob(uncertainJob,'uncertain','upstream_timeout_or_network');
     sync=new BackendSync(status=>latestStatus=status,async()=>{}, {...data,fetch});
-    sync.configure(settings); sync.retry(); await sync.run();
+    sync.configure(settings); await sync.retry();
     assert.equal(store.job(uncertainJob).state,'queued'); // Actual Android Retry dispatches the explicit endpoint.
     assert.equal(store.usage().requests,0);
     console.log('PASS: Android repositories -> real fixture HTTP backend, 10-to-60 refill, concurrent reading, durable lost-ack retry, stable queue append, read-triggered refill, secure pairing, and offline preservation. Zero live model calls.');

@@ -76,3 +76,8 @@ npm --prefix backend run diagnose:gemini
 Tests use local/mocked data. `diagnose:sources` fetches public sources into an in-memory database without environment secrets, Gemini requests or usage-ledger changes. A successful probe does not guarantee every endpoint is reachable. `diagnose:gemini` is a deliberate real provider request, within the configured budget while the backend is stopped. `prewarm` also makes provider requests when the cache is empty.
 
 The app remains readable when the backend or internet is unavailable. A successful TypeScript check or fixture test does not establish live Gemini availability, returned fact accuracy, or Android visual acceptance. See [../docs/manual-test.md](../docs/manual-test.md) for the current device checklist.
+# Request routing update, 2026-10-14
+
+Model cooldowns are persistent, keyed by provider and model, and expire one hour after the most recent dispatched failure. New jobs and manual retries use the first eligible route at or below their current layer. Skipping a model does not reserve daily budget or restart its hour. Model-specific failures advance to the next layer once; shared authorization failures remain terminal, and a final ambiguous timeout remains uncertain for explicit retry. If all routes are cooling, the job waits until the earliest expiry. SQLite schema 8 preserves existing data and budgets.
+
+Authenticated `GET /v1/connection` returns compact connection metadata and today's shared request usage/limit. It excludes cards, job history, sources and upstream diagnostics. `POST /v1/sync` includes bounded friendly notification feedback, usage and a retryable job identity. Existing protocol version 1 and delivery/ACK behavior remain intact.

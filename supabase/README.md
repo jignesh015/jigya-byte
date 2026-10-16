@@ -1,5 +1,7 @@
 # JigyaByte Supabase migration
 
+2026-10-14 update: apply `migrations/20261014000100_model_cooldowns.sql` before deploying the updated functions. It adds a private persistent model cooldown table without rewriting content or usage. The compact `/v1/connection` route supports the app's five-minute handshake and daily usage pill; sync responses include friendly request feedback. `schedule-worker.sql` now dispatches only when a queued job is due or a running lease has expired, so idle minutes do not invoke an Edge Function. Reviewed activation for the updated refill flow supersedes the initial-deployment pending-job guard. See the deployment evidence for actual rollout status.
+
 Project: `fuomvvzgdhleikztdpgz`.
 Phone backend URL: `https://fuomvvzgdhleikztdpgz.supabase.co/functions/v1/jigyabyte-api`.
 
