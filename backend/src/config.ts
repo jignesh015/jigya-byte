@@ -39,7 +39,7 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     unreadMin: integer('UNREAD_MIN', 50), refillAt: integer('UNREAD_REFILL_AT', 55), target: integer('UNREAD_TARGET', 60),
     readLimit: integer('READ_NONFAVORITE_LIMIT', 30), batch: integer('GENERATION_BATCH_SIZE', 30, 1, 60),
     liveSources: env.LIVE_SOURCES_ENABLED === undefined ? true : boolean('LIVE_SOURCES_ENABLED'),
-    concurrency: integer('MAX_CONCURRENT_JOBS', 1, 1, 4), cacheLimit: integer('MAX_CACHE_CARDS', 500, 1),
+    concurrency: integer('MAX_CONCURRENT_JOBS', 1, 1, 4), cacheLimit: integer('MAX_CACHE_CARDS', 5000, 1),
     timeout: integer('REQUEST_TIMEOUT_MS', 30000, 100, 60000),
   };
   if (!(config.unreadMin <= config.refillAt && config.refillAt < config.target)) throw new Error('Invalid unread threshold ordering');

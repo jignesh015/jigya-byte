@@ -5,7 +5,7 @@
 Project: `fuomvvzgdhleikztdpgz`.
 Phone backend URL: `https://fuomvvzgdhleikztdpgz.supabase.co/functions/v1/jigyabyte-api`.
 
-The cloud backend uses private Postgres tables and two Edge Functions. The phone continues to own its offline SQLite library. The API preserves protocol 1 and ten-card delivery/ack semantics. The worker processes one job and at most one Gemini attempt per invocation. A one-minute cron wakes the worker; retries retain their route and due time. Global transactional locks serialize mutations and budget reservations. A 180-second claim lease fences stale invocations. Expired running jobs become uncertain for explicit Retry, with reservations preserved.
+The cloud backend uses private Postgres tables and two Edge Functions. The phone continues to own its offline SQLite library. The API preserves protocol 1 and ten-card delivery/ack semantics. The worker processes one job and at most one Gemini attempt per invocation. A one-minute cron wakes the worker; retries retain their route and due time. Global transactional locks serialize mutations and budget reservations. A 180-second claim lease fences stale invocations. Expired running jobs become uncertain for explicit Retry, with reservations preserved. The server cache is a rolling FIFO capped at `MAX_CACHE_CARDS` (5,000 by default); adding a new card at capacity evicts the oldest cached card. This does not delete cards already saved in phone SQLite or cards serialized in pending deliveries.
 
 ## Deployment sequence
 

@@ -110,10 +110,14 @@ async addCards(cards: Card[], limit: number) {
     await this.transaction(async () => {
         const existing = await this.cards();
         for (const card of cards) {
-            if (existing.length >= limit)
-                break;
             if (existing.some(c => nearDuplicate(c, card)))
                 continue;
+            while (existing.length >= limit) {
+                const oldest = existing.shift();
+                if (!oldest)
+                    break;
+                await this.db.prepare('DELETE FROM cards WHERE id=?').run(oldest.id);
+            }
             await this.db.prepare('INSERT INTO cards(id,hash,fingerprint,body) VALUES (?,?,?,?)').run(card.id, card.contentHash, card.ideaFingerprint, JSON.stringify(card));
             await this.db.prepare('INSERT INTO topic_generation VALUES (?,1) ON CONFLICT(topic) DO UPDATE SET count=topic_generation.count+1').run(card.primaryTopicId);
             for (const source of card.sources)
@@ -240,7 +244,7 @@ async sync(s: Snapshot, config: Config) {
         const remaining = Math.max(0, deficit - reserved);
         let job = await this.activeJob(s.deviceId);
         // Unacknowledged delivery is a barrier: no unlimited generation while a device disappears.
-        if (!pending && remaining && !job && candidates.length === 0 && config.provider !== 'disabled' && (await this.cards()).length < config.cacheLimit) {
+        if (!pending && remaining && !job && candidates.length === 0 && config.provider !== 'disabled') {
             const recent = await this.db.prepare('SELECT error FROM jobs WHERE device_id=? ORDER BY rowid DESC LIMIT 1').get(s.deviceId) as {
                 error: string | null;
             } | undefined;

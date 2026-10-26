@@ -80,8 +80,12 @@ export class Store {
     this.transaction(() => {
       const existing = this.cards();
       for (const card of cards) {
-        if (existing.length >= limit) break;
         if (existing.some(c => nearDuplicate(c, card))) continue;
+        while (existing.length >= limit) {
+          const oldest = existing.shift();
+          if (!oldest) break;
+          this.db.prepare('DELETE FROM cards WHERE id=?').run(oldest.id);
+        }
         this.db.prepare('INSERT INTO cards VALUES (?,?,?,?)').run(card.id, card.contentHash, card.ideaFingerprint, JSON.stringify(card));
         this.db.prepare('INSERT INTO topic_generation VALUES (?,1) ON CONFLICT(topic) DO UPDATE SET count=count+1').run(card.primaryTopicId);
         for (const source of card.sources) this.db.prepare('INSERT OR IGNORE INTO source_usage VALUES (?)').run(source.id);
@@ -181,7 +185,7 @@ export class Store {
       const remaining = Math.max(0, deficit - reserved);
       let job = this.activeJob(s.deviceId);
       // Unacknowledged delivery is a barrier: no unlimited generation while a device disappears.
-      if (!pending && remaining && !job && candidates.length === 0 && config.provider !== 'disabled' && this.cards().length < config.cacheLimit) {
+      if (!pending && remaining && !job && candidates.length === 0 && config.provider !== 'disabled') {
         const recent = this.db.prepare('SELECT error FROM jobs WHERE device_id=? ORDER BY rowid DESC LIMIT 1').get(s.deviceId) as { error: string | null } | undefined;
         if (!recent?.error) job = this.job(this.queue(s.deviceId, generationBatchSize(config)));
       }

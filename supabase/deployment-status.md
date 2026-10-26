@@ -1,6 +1,13 @@
-# Deployment evidence, 2026-10-14
+# Deployment evidence
 
-App follow-up, 2026-10-14: automatic successful syncs with no imported cards no longer produce a library-up-to-date toast. Manual refresh retains confirmation; automatic new-card deliveries show only the added-card message. App typecheck and lifecycle/fixture integration checks passed. Updated ARM64 APK SHA256 `3b38a614e3417326b03a4a0dbdaa7ba118dcece874d30a3bfc244b3120739462` was installed in place on Samsung `R5CT2370GBT` and launched. The backend deployment below is unchanged.
+## Rolling card cache update, 2026-10-18
+
+- Set hosted `MAX_CACHE_CARDS=5000` with Supabase CLI and deployed both `jigyabyte-api` and `jigyabyte-worker` successfully.
+- The server now accepts refill jobs at cache capacity. On each distinct insertion, it evicts the oldest cached card first, keeping the backend pool capped at 5,000. Pending delivery payloads and phone SQLite cards are preserved.
+- Read-only post-deploy checks returned health HTTP 200 (`ready:true`) and authenticated status HTTP 200 (`migrationReady:true`). Gemini remains configured in AI-only mode. Usage remained 1 request, 13,458 reserved tokens, cost 0; deployment did not invoke generation.
+- Backend TypeScript typecheck and `git diff --check` passed. No provider call or generation probe was run.
+
+App follow-up, 2026-10-14: automatic successful syncs with no imported cards no longer produce a library-up-to-date toast. Manual refresh retains confirmation; automatic new-card deliveries show only the added-card message. App typecheck and lifecycle/fixture integration checks passed. Updated ARM64 APK SHA256 `3b38a614e3417326b03a4a0dbdaa7ba118dcece874d30a3bfc244b3120739462` was installed in place on Samsung `R5CT2370GBT` and launched. At that time, the October 14 backend rollout below was unchanged.
 
 Verified current rollout:
 

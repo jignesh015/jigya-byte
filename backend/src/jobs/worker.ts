@@ -43,11 +43,11 @@ export class Worker {
       if (!selected) throw new Failure('provider_configuration');
       this.store.expireNews(this.config.liveSources);
       let s = this.store.getSnapshot(job.device_id);
-      if (!s || !this.store.isRefilling(job.device_id) || s.counts.unread >= this.config.target || this.store.pending(job.device_id) || this.store.candidates(s, this.config.liveSources).length || this.store.cards().length >= this.config.cacheLimit) {
+      if (!s || !this.store.isRefilling(job.device_id) || s.counts.unread >= this.config.target || this.store.pending(job.device_id) || this.store.candidates(s, this.config.liveSources).length) {
         this.store.markJob(job.id, 'cancelled'); return;
       }
       // Fill an output-sized batch, even for a small phone deficit; surplus stays in cache.
-      let n = Math.min(job.count, generationBatchSize(selected), this.config.cacheLimit - this.store.cards().length);
+      let n = Math.min(job.count, generationBatchSize(selected));
       const cached = this.store.cards();
       const use = this.store.usage();
       if (use.requests >= selected.requestLimit || use.tokens >= selected.tokenLimit) throw new Failure('budget_exhausted');

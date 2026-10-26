@@ -41,7 +41,7 @@ export async function runWorker(config: Config, store: PostgresStore,
         && !await store.pending(job.device_id) && !(await store.candidates(s, config.liveSources)).length;
     };
     const cached = await store.cards();
-    if (!await needed() || cached.length >= config.cacheLimit) {
+    if (!await needed()) {
       await store.finish(job,'cancelled'); return { state:'cancelled' };
     }
     const usage = await store.usage();
@@ -50,7 +50,7 @@ export async function runWorker(config: Config, store: PostgresStore,
     let evidence = config.liveSources ? (await live.collect()).filter(s => !used.has(s.id)) : [];
     await store.db.prepare("INSERT INTO settings VALUES ('last_source_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(live.status));
     const available = TOPICS.filter(t => !config.liveSources || !NEWS_TOPICS.includes(t) || evidence.some(s => s.topicIds.includes(t)));
-    const count = Math.min(job.count,generationBatchSize(selected),config.cacheLimit-cached.length);
+    const count = Math.min(job.count,generationBatchSize(selected));
     const topics = distributedTopics(available,count,await store.topicCounts());
     const assigned = new Set<string>();
     evidence = topics.flatMap(topic => {
