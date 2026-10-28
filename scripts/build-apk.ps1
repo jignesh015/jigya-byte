@@ -1,5 +1,6 @@
 param([string]$SdkPath = $env:ANDROID_HOME, [string]$JdkPath = $env:JAVA_HOME,
-  [string]$Architectures = 'arm64-v8a', [switch]$SkipPrebuild)
+  [string]$Architectures = 'arm64-v8a', [switch]$SkipPrebuild,
+  [string]$ShortProjectPath = "$env:SystemDrive\jb")
 $ErrorActionPreference = 'Stop'
 $projectPath = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectPath
@@ -19,9 +20,26 @@ if (-not $SkipPrebuild) {
 }
 $sdkProperty = $SdkPath.Replace('\', '/').Replace(':', '\:')
 Set-Content -LiteralPath (Join-Path $projectPath 'android\local.properties') -Value "sdk.dir=$sdkProperty"
-Push-Location (Join-Path $projectPath 'android')
+# Keep Gradle and native dependencies on one drive with short paths. A junction
+# aliases the existing checkout; no project or dependency files are copied.
+if (-not (Test-Path -LiteralPath $ShortProjectPath)) {
+  New-Item -ItemType Junction -Path $ShortProjectPath -Target $projectPath | Out-Null
+}
+$shortEntry = Get-Item -LiteralPath $ShortProjectPath
+if ($shortEntry.LinkType -ne 'Junction' -or [IO.Path]::GetFullPath([string]$shortEntry.Target).TrimEnd('\') -ne [IO.Path]::GetFullPath($projectPath).TrimEnd('\')) {
+  throw "ShortProjectPath must be a junction to this project: $ShortProjectPath"
+}
+$env:JIGYABYTE_REAL_ROOT = $projectPath
+$env:JIGYABYTE_SHORT_ROOT = $ShortProjectPath
+$initScript = Join-Path $PSScriptRoot 'android-short-path.init.gradle'
+# React Native's cache does not invalidate when a temporary config is removed.
+# Regenerate this small manifest so native packages cannot be silently omitted.
+$autolinkingManifest = Join-Path $projectPath 'android\build\generated\autolinking\autolinking.json'
+if (Test-Path -LiteralPath $autolinkingManifest) { Remove-Item -LiteralPath $autolinkingManifest }
+
+Push-Location (Join-Path $ShortProjectPath 'android')
 try {
-  & .\gradlew.bat app:assembleRelease "-PreactNativeArchitectures=$Architectures" --console=plain
+  & .\gradlew.bat app:assembleRelease "-PreactNativeArchitectures=$Architectures" --init-script $initScript --console=plain
   if ($LASTEXITCODE -ne 0) { throw 'Android APK build failed.' }
 } finally { Pop-Location }
 $artifactPath = Join-Path $projectPath 'artifacts'

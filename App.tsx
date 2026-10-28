@@ -731,21 +731,19 @@ function SettingsScreen({ onOpenInterests, backendStatus, unread, onRefresh, red
   );
 }
 
-function AnalyticsScreen({ snapshot, selected, onSelect }: {
-  snapshot: AnalyticsSnapshot | null;
-  selected: AnalyticsMetric;
-  onSelect: (metric: AnalyticsMetric) => void;
-}) {
-  const maxValue = useMemo(() => Math.max(1, ...topics.map((topic) => snapshot?.byTopic[selected][topic.id] ?? 0)), [selected, snapshot]);
-  const metricSwipeStart = useRef({ x: 0, y: 0, at: 0 });
-  const metricSwipeCaptured = useRef(false);
-  const swipeMetrics: AnalyticsMetric[] = ['seen', 'expanded', 'favorites'];
+function AnalyticsScreen({ snapshot }: { snapshot: AnalyticsSnapshot | null }) {
+  const rows = topics.map((topic, index) => {
+    const seen = snapshot?.byTopic.seen[topic.id] ?? 0;
+    const expanded = snapshot?.byTopic.expanded[topic.id] ?? 0;
+    const favorites = snapshot?.byTopic.favorites[topic.id] ?? 0;
+    return { topic, index, seen, expanded, favorites, rate: seen > 0 ? expanded / seen : 0 };
+  }).sort((a, b) => b.rate - a.rate || a.index - b.index);
+  const maxSeen = Math.max(1, ...rows.map((row) => row.seen));
 
   return (
     <ScrollView style={styles.scrollView} contentContainerStyle={styles.analyticsContent} showsVerticalScrollIndicator={false}>
       <Text style={styles.pageTitle}>Your learning</Text>
       <Text style={styles.analyticsSubtitle}>A snapshot of the ideas you’ve explored across all time.</Text>
-
       <View style={styles.statRow}>
         {(['seen', 'expanded', 'favorites'] as AnalyticsMetric[]).map((metric) => (
           <View key={metric} style={styles.statCard}>
@@ -754,79 +752,35 @@ function AnalyticsScreen({ snapshot, selected, onSelect }: {
           </View>
         ))}
       </View>
-
-      <View style={styles.metricPicker} accessibilityRole="tablist">
-        {(['seen', 'expanded', 'favorites'] as AnalyticsMetric[]).map((metric) => {
-          const active = metric === selected;
+      <View style={styles.chartHeader}>
+        <Text style={styles.chartTitle}>Topics</Text>
+      </View>
+      {snapshot?.totals.seen === 0 ? <Text style={styles.chartEmpty}>Read a card in the Feed to start your chart.</Text> : null}
+      <View style={styles.chart}>
+        <View style={styles.chartColumnHeaders} accessible={false}>
+          <Text style={[styles.chartColumnLabel, styles.chartTopic]}>Topic</Text>
+          <View style={styles.chartBarColumn} />
+          <Text style={[styles.chartColumnLabel, styles.chartCountColumn]}>Expanded / Seen</Text>
+          <Text style={[styles.chartColumnLabel, styles.chartRateColumn]}>Rate</Text>
+          <Text style={[styles.chartColumnLabel, styles.chartFavoritesColumn]}>Faves</Text>
+        </View>
+        {rows.map(({ topic, seen, expanded, favorites, rate }) => {
+          const color = topicColor(topic.id);
           return (
-            <Pressable
-              key={metric}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
-              onPress={() => onSelect(metric)}
-              style={({ pressed }) => [styles.metricButton, active && styles.metricButtonActive, pressed && styles.pressed]}
-            >
-              <Text style={[styles.metricButtonText, active && styles.metricButtonTextActive]}>{metricLabels[metric]}</Text>
-            </Pressable>
+            <View key={topic.id} style={styles.chartRow} accessible accessibilityLabel={`${topic.name}: ${expanded} expanded of ${seen} seen, ${seen ? `${Math.round(rate * 100)} percent` : 'no rate'}, ${favorites} favorites`}>
+              <Text style={[styles.chartTopic, { color }]}>{topic.name}</Text>
+              <View style={[styles.barTrack, styles.chartBarColumn]}>
+                <View style={[styles.barSeen, { width: `${Math.min(100, seen / maxSeen * 100)}%`, backgroundColor: color }]} />
+                <View style={[styles.barExpanded, { width: `${Math.min(100, expanded / maxSeen * 100)}%`, backgroundColor: color }]} />
+              </View>
+              <Text numberOfLines={1} adjustsFontSizeToFit style={[styles.chartValue, styles.chartCountColumn]}>{expanded} / {seen}</Text>
+              <Text numberOfLines={1} adjustsFontSizeToFit style={[styles.chartValue, styles.chartRateColumn]}>{seen ? `${Math.round(rate * 100)}%` : '—'}</Text>
+              <View style={[styles.chartFavorites, styles.chartFavoritesColumn]}><HeartIcon size={14} filled={favorites > 0} color={favorites > 0 ? colors.accent : colors.muted} /><Text style={styles.chartValue}>{favorites}</Text></View>
+            </View>
           );
         })}
       </View>
-
-      <View
-        onTouchStart={(event) => {
-          metricSwipeStart.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY, at: Date.now() };
-          metricSwipeCaptured.current = false;
-        }}
-        onMoveShouldSetResponderCapture={(event) => {
-          const deltaX = event.nativeEvent.pageX - metricSwipeStart.current.x;
-          const deltaY = event.nativeEvent.pageY - metricSwipeStart.current.y;
-          const horizontal = Math.abs(deltaX) > 16 && Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
-          if (horizontal) metricSwipeCaptured.current = true;
-          return horizontal;
-        }}
-        onResponderRelease={(event) => {
-          const deltaX = event.nativeEvent.pageX - metricSwipeStart.current.x;
-          const deltaY = event.nativeEvent.pageY - metricSwipeStart.current.y;
-          const elapsed = Math.max(1, Date.now() - metricSwipeStart.current.at);
-          const quickSwipe = Math.abs(deltaX) >= 16 && Math.abs(deltaX) / elapsed >= 0.45;
-          if (metricSwipeCaptured.current && Math.abs(deltaY) < Math.abs(deltaX) / 1.15 && (Math.abs(deltaX) >= 36 || quickSwipe)) {
-            const index = swipeMetrics.indexOf(selected);
-            const nextIndex = Math.max(0, Math.min(swipeMetrics.length - 1, index + (deltaX < 0 ? 1 : -1)));
-            if (nextIndex !== index) onSelect(swipeMetrics[nextIndex]);
-          }
-          metricSwipeCaptured.current = false;
-        }}
-        onResponderTerminate={() => { metricSwipeCaptured.current = false; }}
-        onResponderTerminationRequest={() => false}
-      >
-        <View style={styles.chartHeader}>
-          <Text style={styles.chartTitle}>{metricLabels[selected]} by topic</Text>
-          <Text style={styles.chartCaption}>UNIQUE CARDS · PRIMARY TOPIC · ALL TIME</Text>
-        </View>
-        {snapshot?.totals[selected] === 0 ? (
-          <Text style={styles.chartFootnote} accessibilityLiveRegion="polite">
-            {selected === 'seen' ? 'Read a card in the Feed to start your chart.'
-              : selected === 'expanded' ? 'Swipe left on a card to explore an idea.'
-                : 'Save a card with the heart to see your favorites here.'}
-          </Text>
-        ) : null}
-        <View style={styles.chart}>
-          {topics.map((topic) => {
-            const value = snapshot?.byTopic[selected][topic.id] ?? 0;
-            const fill = value === 0 ? 0 : Math.max(4, (value / maxValue) * 100);
-            return (
-              <View key={topic.id} style={styles.chartRow} accessible accessibilityLabel={`${topic.name}: ${value} ${metricLabels[selected].toLowerCase()} cards`}>
-                <Text style={[styles.chartTopic, { color: topicColor(topic.id) }]}>{topic.name}</Text>
-                <View style={styles.barTrack}>
-                  <View style={[styles.bar, { width: `${fill}%`, backgroundColor: topicColor(topic.id) }]} />
-                </View>
-                <Text style={styles.chartValue}>{value}</Text>
-              </View>
-            );
-          })}
-        </View>
-        <Text style={styles.chartFootnote}>Seen and Expanded count each card once, under its primary topic. Favorites shows cards currently saved.</Text>
-      </View>
+      <Text style={styles.chartFootnote}>Seen and Expanded count each card once, under its primary topic. Favorites shows cards currently saved.</Text>
     </ScrollView>
   );
 }
@@ -962,7 +916,6 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('feed');
   const [view, setView] = useState<AppView>('main');
   const [detailCardId, setDetailCardId] = useState<string | null>(null);
-  const [metric, setMetric] = useState<AnalyticsMetric>('seen');
   const [cards, setCards] = useState<Card[]>([]);
   const [assignments, setAssignments] = useState<FeedAssignment[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsSnapshot | null>(null);
@@ -1229,7 +1182,7 @@ export default function App() {
                   <FavoritesScreen cards={cards} onOpen={openDetails} onFavorite={handleFavorite} />
                 </View>
                 <View style={[styles.mainPane, tab !== 'analytics' && styles.hiddenPane]}>
-                  <AnalyticsScreen snapshot={analytics} selected={metric} onSelect={setMetric} />
+                  <AnalyticsScreen snapshot={analytics} />
                 </View>
                 <View style={[styles.mainPane, tab !== 'settings' && styles.hiddenPane]}>
                   <SettingsScreen onOpenInterests={openInterests} backendStatus={backendStatus}
@@ -1416,20 +1369,23 @@ const styles = StyleSheet.create({
   statCard: { flex: 1, minWidth: 0, minHeight: 86, backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, borderRadius: 17, paddingHorizontal: 12, paddingVertical: 12, justifyContent: 'space-between' },
   statLabel: { color: '#d2d5d1', fontSize: 10 },
   statValue: { color: colors.accent, fontSize: 27, fontWeight: '700' },
-  metricPicker: { flexDirection: 'row', padding: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginTop: 17 },
-  metricButton: { flex: 1, minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
-  metricButtonActive: { backgroundColor: colors.accent },
-  metricButtonText: { color: '#d1d5d2', fontSize: 12, fontWeight: '600' },
-  metricButtonTextActive: { color: colors.background, fontWeight: '800' },
   chartHeader: { marginTop: 27, marginBottom: 18 },
   chartTitle: { color: colors.text, fontSize: 19, fontWeight: '700' },
-  chartCaption: { color: colors.muted, fontSize: 9, letterSpacing: 1.2, marginTop: 6 },
-  chart: { gap: 17 },
-  chartRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  chartTopic: { width: '30%', color: colors.text, fontSize: 12 },
-  barTrack: { height: 13, flex: 1, borderRadius: 99, overflow: 'hidden', backgroundColor: '#202423' },
-  bar: { height: '100%', borderRadius: 99, backgroundColor: colors.accent },
-  chartValue: { width: 24, textAlign: 'right', color: colors.text, fontSize: 12 },
+  chartEmpty: { color: colors.muted, fontSize: 12, marginBottom: 18 },
+  chart: {},
+  chartColumnHeaders: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
+  chartColumnLabel: { color: colors.muted, fontSize: 9, textAlign: 'right' },
+  chartRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 38, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  chartTopic: { width: '25%', color: colors.text, fontSize: 11, textAlign: 'left' },
+  chartBarColumn: { flex: 1, minWidth: 20 },
+  chartCountColumn: { width: 61, textAlign: 'right' },
+  chartRateColumn: { width: 30, textAlign: 'right' },
+  chartFavoritesColumn: { width: 32 },
+  chartFavorites: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
+  chartValue: { color: colors.text, fontSize: 11, fontVariant: ['tabular-nums'] },
+  barTrack: { height: 12, borderRadius: 99, overflow: 'hidden', backgroundColor: '#202423' },
+  barSeen: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 99, opacity: 0.35 },
+  barExpanded: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 99 },
   chartFootnote: { color: colors.muted, fontSize: 11, lineHeight: 17, marginTop: 23 },
   bottomNav: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: '#0c0e0e', paddingTop: 8, paddingBottom: 7 },
   navItem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, minHeight: 48 },

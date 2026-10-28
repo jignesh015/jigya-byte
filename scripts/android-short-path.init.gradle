@@ -1,0 +1,37 @@
+// Keep native dependency build paths under the same-drive junction.
+gradle.settingsEvaluated { settings ->
+    def original = System.getenv('JIGYABYTE_REAL_ROOT')
+    def alias = System.getenv('JIGYABYTE_SHORT_ROOT')
+    def shorten = { String value ->
+        def result = value.replace('\\', '/').replace(original.replace('\\', '/'), alias.replace('\\', '/'))
+        def matcher = result =~ /\/node_modules\/\.pnpm\/[^\/]+\/node_modules\/((?:@[^\/]+\/)?[^\/]+)/
+        if (matcher.find()) {
+            def direct = alias.replace('\\', '/') + '/node_modules/' + matcher.group(1)
+            if (new File(direct).exists()) result = result.replace(matcher.group(0), '/node_modules/' + matcher.group(1))
+        }
+        return result
+    }
+    def visit
+    visit = { descriptor ->
+        descriptor.projectDir = new File(shorten(descriptor.projectDir.absolutePath))
+        descriptor.children.each { visit(it) }
+    }
+    visit(settings.rootProject)
+    def config = new File(settings.settingsDir, 'build/generated/autolinking/autolinking.json')
+    if (config.exists()) {
+        def json = new groovy.json.JsonSlurper().parse(config)
+        ['react-native-safe-area-context', 'react-native-svg'].each { dependency ->
+            if (!json.dependencies[dependency]?.platforms?.android?.sourceDir) {
+                throw new GradleException("Required Android native dependency missing from autolinking: ${dependency}")
+            }
+        }
+        def mapPaths
+        mapPaths = { value ->
+            if (value instanceof Map) return value.collectEntries { k, v -> [(k): mapPaths(v)] }
+            if (value instanceof List) return value.collect { mapPaths(it) }
+            if (value instanceof String) return shorten(value)
+            return value
+        }
+        config.text = groovy.json.JsonOutput.toJson(mapPaths(json))
+    }
+}
