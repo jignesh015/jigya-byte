@@ -2,6 +2,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import type { Card, History, Snapshot } from '../../../backend/src/contracts/index.ts';
 import { Failure } from '../../../backend/src/contracts/index.ts';
 import type { Config } from '../../../backend/src/config.ts';
+import { avoidsCard, normalizeSubject, type AvoidedSubject } from '../../../src/data/subjectAvoidance.ts';
 import { nearDuplicate } from '../../../backend/src/preparation/cards.ts';
 import { generationBatchSize, providerRoutes } from '../../../backend/src/config.ts';
 import { NEWS_TOPICS } from '../../../backend/src/sources/live.ts';
@@ -14,7 +15,7 @@ import { requestFeedback } from '../../../backend/src/jobs/feedback.ts';
 
 type Query = (query: string, args?: any[]) => Promise<any[]>;
 type ClaimedJob = Job & { claim_token: string };
-const tables = 'cards|devices|history|deliveries|jobs|usage|source_cache|topic_generation|source_usage|settings|model_cooldowns';
+const tables = 'cards|devices|history|deliveries|jobs|usage|source_cache|topic_generation|source_usage|settings|model_cooldowns|avoided_subjects';
 function dialect(query: string): string {
   const ignore = query.includes('INSERT OR IGNORE');
   query = query.replace('INSERT OR IGNORE', 'INSERT').replaceAll('rowid', 'seq');
@@ -51,6 +52,20 @@ export class PostgresStore {
     }) as T;
   }
   async close() { await this.pool.end({ timeout: 5 }); }
+  async avoidedSubjects(device: string): Promise<AvoidedSubject[]> {
+    return (await this.db.prepare('SELECT subject,topic_ids FROM avoided_subjects WHERE device_id=? ORDER BY subject').all(device))
+      .map(r => ({ subject: r.subject, topicIds: JSON.parse(r.topic_ids) }));
+  }
+  async addAvoidedSubjects(device: string, entries: AvoidedSubject[]) {
+    await this.transaction(async () => {
+      for (const entry of entries) {
+        const subject = normalizeSubject(entry.subject);
+        const prior = await this.db.prepare('SELECT topic_ids FROM avoided_subjects WHERE device_id=? AND subject=?').get(device, subject);
+        const topicIds = [...new Set([...(prior ? JSON.parse(prior.topic_ids) : []), ...entry.topicIds])].sort();
+        await this.db.prepare('INSERT INTO avoided_subjects VALUES (?,?,?) ON CONFLICT(device_id,subject) DO UPDATE SET topic_ids=excluded.topic_ids').run(device,subject,JSON.stringify(topicIds));
+      }
+    });
+  }
   async cooldowns(): Promise<ModelCooldown[]> { return await this.db.prepare('SELECT * FROM model_cooldowns').all(); }
   async coolModel(config: Config, reason: string, now = Date.now()) {
     await this.db.prepare('INSERT INTO model_cooldowns VALUES (?,?,?,?) ON CONFLICT(provider,model) DO UPDATE SET failed_at=excluded.failed_at,reason=excluded.reason')
@@ -105,12 +120,13 @@ export class PostgresStore {
 async cards(): Promise<Card[]> { return (await this.db.prepare('SELECT body FROM cards ORDER BY rowid').all() as {
     body: string;
 }[]).map(r => JSON.parse(r.body)); }
-async addCards(cards: Card[], limit: number) {
+async addCards(cards: Card[], limit: number, device?: string) {
     let added = 0;
     await this.transaction(async () => {
         const existing = await this.cards();
+        const avoided = device ? await this.avoidedSubjects(device) : [];
         for (const card of cards) {
-            if (existing.some(c => nearDuplicate(c, card)))
+            if (avoidsCard(card, avoided) || existing.some(c => nearDuplicate(c, card)))
                 continue;
             while (existing.length >= limit) {
                 const oldest = existing.shift();
@@ -182,8 +198,10 @@ async markJob(id: string, state: string, error: string | null = null, next = 0) 
 async candidates(s: Snapshot, requireNewsSources = false) {
     const refs = [...s.retainedCards, ...await this.histories(s.deviceId)];
     const now = Date.now();
+    const avoided = await this.avoidedSubjects(s.deviceId);
     return (await this.cards()).filter(c => (!requireNewsSources || !NEWS_TOPICS.includes(c.primaryTopicId) || c.sources.length > 0)
-        && !refs.some(r => r.id === c.id || r.contentHash === c.contentHash || r.ideaFingerprint === c.ideaFingerprint)
+        && !avoidsCard(c, avoided)
+      && !refs.some(r => r.id === c.id || r.contentHash === c.contentHash || r.ideaFingerprint === c.ideaFingerprint)
         && (!c.sources.length || c.sources.every(source => now - Date.parse(source.publishedAt) <= 7 * 86400000)));
 }
 async topicCounts() {

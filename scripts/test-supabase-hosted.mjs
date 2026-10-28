@@ -4,6 +4,7 @@ import process from 'node:process';
 import {randomUUID} from 'node:crypto';
 import {writeFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
+import {cardSubject,avoidsCard} from '../src/data/subjectAvoidance.ts';
 process.loadEnvFile('.env.cloud');
 const base='https://fuomvvzgdhleikztdpgz.supabase.co/functions/v1/';
 const device=`deployment-probe-${randomUUID()}`;
@@ -14,6 +15,11 @@ DELETE FROM jigyabyte.deliveries WHERE device_id='${device}';
 DELETE FROM jigyabyte.history WHERE device_id='${device}';
 DELETE FROM jigyabyte.jobs WHERE device_id='${device}';
 DELETE FROM jigyabyte.devices WHERE id='${device}';
+DELETE FROM jigyabyte.avoided_subjects WHERE device_id IN ('${device}','${device}-avoid');
+DELETE FROM jigyabyte.deliveries WHERE device_id='${device}-avoid';
+DELETE FROM jigyabyte.history WHERE device_id='${device}-avoid';
+DELETE FROM jigyabyte.jobs WHERE device_id='${device}-avoid';
+DELETE FROM jigyabyte.devices WHERE id='${device}-avoid';
 COMMIT;\n`);
 const api=async(path,body,token=process.env.BACKEND_DEVICE_TOKEN)=>{
   const response=await fetch(base+'jigyabyte-api'+path,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
@@ -32,6 +38,23 @@ const ack={inventory,acceptedIds:[],rejectedIds:first.cards.map(c=>c.id)};
 assert.equal((await api(`/v1/deliveries/${first.deliveryId}/ack`,ack)).acknowledged,true);
 assert.equal((await api(`/v1/deliveries/${first.deliveryId}/ack`,ack)).acknowledged,true);
 console.log(JSON.stringify({authenticated:true,unauthorizedBlocked:true,workerRejectsPhoneToken:true,cachedDelivery:first.cards.length,lostResponseRetry:true,lostAckRetry:true,usage:before.usage}));
+if(process.argv.includes('--avoidance')) {
+  const blocked=first.cards[0],subject={subject:cardSubject(blocked),topicIds:blocked.topicIds};
+  const payload={protocolVersion:1,deviceId:`${device}-avoid`,subjects:[subject]};
+  for(let i=0;i<2;i++) {
+    const response=await api('/v1/avoidance/batches',payload);
+    assert.deepEqual(response.acknowledgedSubjects,[subject.subject]);
+  }
+  const delivery=await api('/v1/sync',{...inventory,deviceId:payload.deviceId,inventoryVersion:1});
+  assert.equal(delivery.cards.length,10);
+  assert.ok(delivery.cards.every(c=>!avoidsCard(c,[subject])));
+  const invalid=await fetch(base+'jigyabyte-api/v1/avoidance/batches',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  assert.equal(invalid.status,401);
+  const after=await api('/v1/connection');
+  assert.deepEqual(after.usage,before.usage);
+  console.log(JSON.stringify({avoidanceAuthenticated:true,idempotentPreference:true,cachedExclusions:true,
+    compactSubjectBytes:Buffer.byteLength(subject.subject),noGenerationReserved:true}));
+}
 if(process.argv.includes('--generate')) {
   const db=new DatabaseSync('backend/data/backend.sqlite',{readOnly:true});
   const cards=db.prepare('SELECT body FROM cards').all().map(r=>JSON.parse(r.body));db.close();

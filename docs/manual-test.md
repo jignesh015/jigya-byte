@@ -1,5 +1,15 @@
 # JigyaByte phone acceptance
 
+## Subject-level Never — 2026-10-29
+
+Verified: app/backend TypeScript checks, app data/feed/sync/HTTP fixtures, 48 backend tests and 8 Deno/Postgres tests passed. Coverage includes persistent exclusions, same-topic alternatives, cross-tag matching, delayed deliveries, restarts, lost preference acknowledgements, refill-disabled uploads and preferences arriving during generation. The hosted authenticated cached-only probe passed without reserving a model request. Both functions were deployed after the additive private-table migration.
+
+The ARM64 APK was installed in place on Samsung `R5CT2370GBT` and launched with the existing library. The reader's four touch-sized buttons fit on one row in the physical-device screenshot `artifacts/never-reader-phone.png`; wrapping is enabled for narrower layouts. A real card's Never action was not clicked during validation, so no personal exclusion was added by the test. New live Gemini output with the subject field and arbitrary semantic paraphrases remain untested; model instructions and fixture checks do not establish perfect semantic matching.
+
+- [ ] During normal use, tap Never on an unwanted card: return to the originating screen and keep unrelated cards available.
+- [ ] Try Never offline, restart, and reconnect: the card stays hidden and the preference uploads.
+- [ ] Check later live generated batches for differently worded versions of the excluded subject.
+
 ## Free live sources and randomized batch generation — 2026-10-12
 
 The backend now uses free public source adapters, dated references and output-sized batches. Both typechecks, app/data/HTTP integration tests, all 39 backend tests, publication audit and ARM64 APK build passed. The source-only probe retrieved 41 usable items: 33 current-affairs, seven AI/coding and one game announcement; GDELT timed out from this machine. No Gemini requests or usage changes were made. The updated APK is `artifacts/JigyaByte.apk`, SHA-256 `d44a656c2e1f350476482dbd37fd48afa402a30ece67b41cd6a2ecf188837246`. Build and fixture checks do not establish physical-device or live Gemini acceptance. Backend service remains user-started.

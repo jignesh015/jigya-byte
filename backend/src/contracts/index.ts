@@ -54,6 +54,19 @@ export function snapshot(value: unknown) {
 }
 export type Snapshot = ReturnType<typeof snapshot>;
 export type SourceRef = { id: string; name: string; title: string; url: string; publishedAt: string; retrievedAt: string; dateKind: 'published' | 'observed' };
-export type Card = { id: string; schemaVersion: 1; contentHash: string; ideaFingerprint: string; title: string; summary: string; explanation: string;
+export type Card = { subject?: string; id: string; schemaVersion: 1; contentHash: string; ideaFingerprint: string; title: string; summary: string; explanation: string;
   primaryTopicId: string; topicIds: string[]; contentMode: 'ai-only'; providerId: string; modelId: string;
   promptVersion: string; generatedAt: string; sources: SourceRef[] };
+
+export function avoidanceBatch(value: unknown) {
+  const v = object(value);
+  if (v.protocolVersion !== 1) throw new Failure('unsupported_protocol');
+  const subjects = array(v.subjects, 100).map(raw => {
+    const entry = object(raw), subject = string(entry.subject, 280);
+    if (!/[\p{L}\p{N}]/u.test(subject)) throw new Failure('invalid_subject');
+    const topicIds = [...new Set(array(entry.topicIds, TOPICS.length).map(t => string(t)))];
+    if (!topicIds.length || topicIds.some(t => !TOPICS.includes(t))) throw new Failure('invalid_topic');
+    return { subject, topicIds };
+  });
+  return { deviceId: string(v.deviceId), subjects };
+}

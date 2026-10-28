@@ -68,14 +68,16 @@ export class Worker {
       // Inventory may have changed while the model request is being prepared.
       s = this.store.getSnapshot(job.device_id);
       if (!s || !this.store.isRefilling(job.device_id) || s.counts.unread >= this.config.target || this.store.pending(job.device_id) || this.store.candidates(s, this.config.liveSources).length) { this.store.markJob(job.id, 'cancelled'); return; }
+      const avoided = this.store.avoidedSubjects(job.device_id);
+      const exclusions = () => avoided.filter(s => s.topicIds.some(t => topics.includes(t))).map(s => s.subject);
       const excluded = cached.slice(-15).map(c => c.title);
-      let text = prompt(topics, excluded, new Date(), evidence);
+      let text = prompt(topics, excluded, new Date(), evidence, exclusions());
       const remainingTokens = selected.tokenLimit - this.store.usage().tokens;
       const bytes = () => Buffer.byteLength(text + JSON.stringify(outputSchema));
       const fits = () => bytes() <= selected.maxInput && remainingTokens - bytes() >= Math.min(selected.maxOutput, topics.length * 350 + 512);
       while (!fits() && topics.length > 1) {
         topics.pop(); evidence = evidence.filter(source => topics.some(topic => source.topicIds.includes(topic)));
-        text = prompt(topics, excluded, new Date(), evidence);
+        text = prompt(topics, excluded, new Date(), evidence, exclusions());
       }
       n = topics.length;
       const inputBytes = bytes();
@@ -94,7 +96,7 @@ export class Worker {
         const row = this.store.db.prepare('SELECT diagnostics FROM jobs WHERE id=?').get(job.id) as { diagnostics: string | null };
         this.store.db.prepare('UPDATE jobs SET diagnostics=? WHERE id=?').run(JSON.stringify({ ...JSON.parse(row.diagnostics ?? '{}'), preparedCards: cards.length, rejectedCards: prepared.rejected }), job.id);
       }
-      const added = this.store.addCards(cards, this.config.cacheLimit);
+      const added = this.store.addCards(cards, this.config.cacheLimit, job.device_id);
       if (!added) throw new Failure('duplicate_generation');
       this.store.markJob(job.id, 'completed');
     } catch (error) {

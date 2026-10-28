@@ -5,6 +5,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import type { Card, History, Snapshot } from '../contracts/index.ts';
 import { Failure } from '../contracts/index.ts';
 import type { Config } from '../config.ts';
+import { avoidsCard, normalizeSubject, type AvoidedSubject } from '../../../src/data/subjectAvoidance.ts';
 import { nearDuplicate } from '../preparation/cards.ts';
 import { generationBatchSize } from '../config.ts';
 import { NEWS_TOPICS } from '../sources/live.ts';
@@ -20,7 +21,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (version > 8) throw new Error('Unsupported backend database version');
+    if (version > 9) throw new Error('Unsupported backend database version');
     if (!version) this.db.exec(`BEGIN;
       CREATE TABLE cards(id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, fingerprint TEXT UNIQUE NOT NULL, body TEXT NOT NULL);
       CREATE TABLE devices(id TEXT PRIMARY KEY, version INTEGER NOT NULL, snapshot TEXT NOT NULL);
@@ -55,6 +56,9 @@ export class Store {
     if (version < 8) this.db.exec(`BEGIN;
       CREATE TABLE IF NOT EXISTS model_cooldowns(provider TEXT NOT NULL, model TEXT NOT NULL, failed_at INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(provider,model));
       PRAGMA user_version=8; COMMIT;`);
+    if (version < 9) this.db.exec(`BEGIN;
+      CREATE TABLE IF NOT EXISTS avoided_subjects(device_id TEXT NOT NULL, subject TEXT NOT NULL, topic_ids TEXT NOT NULL, PRIMARY KEY(device_id,subject));
+      PRAGMA user_version=9; COMMIT;`);
     // Seed old cached topics once without touching cards or reservations.
     const cached = this.cards();
     for (const topic of new Set(cached.map(c => c.primaryTopicId))) this.db.prepare('INSERT OR IGNORE INTO topic_generation VALUES (?,?)').run(topic,
@@ -69,18 +73,33 @@ export class Store {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   close() { this.db.close(); }
+  avoidedSubjects(device: string): AvoidedSubject[] {
+    return (this.db.prepare('SELECT subject,topic_ids FROM avoided_subjects WHERE device_id=? ORDER BY subject').all(device) as { subject: string; topic_ids: string }[])
+      .map(r => ({ subject: r.subject, topicIds: JSON.parse(r.topic_ids) }));
+  }
+  addAvoidedSubjects(device: string, entries: AvoidedSubject[]) {
+    this.transaction(() => {
+      for (const entry of entries) {
+        const subject = normalizeSubject(entry.subject);
+        const prior = this.db.prepare('SELECT topic_ids FROM avoided_subjects WHERE device_id=? AND subject=?').get(device, subject) as { topic_ids: string } | undefined;
+        const topicIds = [...new Set([...(prior ? JSON.parse(prior.topic_ids) : []), ...entry.topicIds])].sort();
+        this.db.prepare('INSERT INTO avoided_subjects VALUES (?,?,?) ON CONFLICT(device_id,subject) DO UPDATE SET topic_ids=excluded.topic_ids').run(device,subject,JSON.stringify(topicIds));
+      }
+    });
+  }
   cooldowns(): ModelCooldown[] { return this.db.prepare('SELECT * FROM model_cooldowns').all() as ModelCooldown[]; }
   coolModel(config: Config, reason: string, now = Date.now()) {
     this.db.prepare('INSERT INTO model_cooldowns VALUES (?,?,?,?) ON CONFLICT(provider,model) DO UPDATE SET failed_at=excluded.failed_at,reason=excluded.reason')
       .run(config.provider, config.model!, now, reason);
   }
   cards(): Card[] { return (this.db.prepare('SELECT body FROM cards ORDER BY rowid').all() as { body: string }[]).map(r => JSON.parse(r.body)); }
-  addCards(cards: Card[], limit: number) {
+  addCards(cards: Card[], limit: number, device?: string) {
     let added = 0;
     this.transaction(() => {
       const existing = this.cards();
+      const avoided = device ? this.avoidedSubjects(device) : [];
       for (const card of cards) {
-        if (existing.some(c => nearDuplicate(c, card))) continue;
+        if (avoidsCard(card, avoided) || existing.some(c => nearDuplicate(c, card))) continue;
         while (existing.length >= limit) {
           const oldest = existing.shift();
           if (!oldest) break;
@@ -137,7 +156,9 @@ export class Store {
   candidates(s: Snapshot, requireNewsSources = false): Card[] {
     const refs = [...s.retainedCards, ...this.histories(s.deviceId)];
     const now = Date.now();
+    const avoided = this.avoidedSubjects(s.deviceId);
     return this.cards().filter(c => (!requireNewsSources || !NEWS_TOPICS.includes(c.primaryTopicId) || c.sources.length > 0)
+      && !avoidsCard(c, avoided)
       && !refs.some(r => r.id === c.id || r.contentHash === c.contentHash || r.ideaFingerprint === c.ideaFingerprint)
       && (!c.sources.length || c.sources.every(source => now - Date.parse(source.publishedAt) <= 7 * 86400000)));
   }

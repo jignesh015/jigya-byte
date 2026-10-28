@@ -1,10 +1,11 @@
+import { cardSubject, avoidsCard, type AvoidedSubject } from './subjectAvoidance';
 import * as SQLite from 'expo-sqlite';
 import { contentHash, topics, type ContentCard } from './cardContent';
 import { buildFeedSchedule, type FeedAssignment } from './feed';
 import { validateBackendCard, type BackendCard, type Inventory, type DeliveryAck } from './backendContracts';
 
 const DATABASE_NAME = 'jigyabyte.db';
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 let databasePromise: Promise<SQLite.SQLiteDatabase> | undefined;
 let writeTail: Promise<unknown> = Promise.resolve();
 let protectedIds = new Set<string>();
@@ -19,6 +20,7 @@ async function transaction<T>(db: SQLite.SQLiteDatabase, work: () => Promise<T>)
 }
 
 export type Card = ContentCard & {
+  subject?: string;
   contentHash: string;
   isFavorite: boolean;
   nextReviewAt: string | null;
@@ -192,6 +194,14 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
       PRAGMA user_version=7; COMMIT;`);
     version = 7;
   }
+  if (version < 8) {
+    await db.execAsync(`BEGIN;
+      ALTER TABLE cards ADD COLUMN subject TEXT;
+      ALTER TABLE cards ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE avoided_subjects(subject TEXT PRIMARY KEY, topic_ids TEXT NOT NULL, synced INTEGER NOT NULL DEFAULT 0);
+      PRAGMA user_version=8; COMMIT;`);
+    version = 8;
+  }
   if (version !== CURRENT_SCHEMA_VERSION) {
     throw new Error(`Unsupported JigyaByte database version ${version}.`);
   }
@@ -231,15 +241,20 @@ export async function initializeDatabase(): Promise<void> {
   await cleanupReadBodies();
 }
 
+export async function getHiddenCardIds(): Promise<Set<string>> {
+  const db = await getDatabase();
+  return new Set((await db.getAllAsync<{ id: string }>('SELECT id FROM cards WHERE hidden=1')).map(r => r.id));
+}
+
 export async function getCards(): Promise<Card[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{
-        id: string; provider_id: string; content_hash: string; title: string; summary: string; explanation: string;
+        subject: string | null; id: string; provider_id: string; content_hash: string; title: string; summary: string; explanation: string;
     primary_topic_id: string; topic_ids: string; source_name: string; source_url: string | null;
     attribution: string; license: string; license_url: string | null; retrieved_at: string | null;
     is_favorite: number; next_review_at: string | null; first_read_at: string | null; saved_at: string | null; references_json: string; provenance_json: string | null;
   }>(`
-    SELECT c.id, c.provider_id, c.content_hash, c.title, c.summary, c.explanation,
+    SELECT c.subject, c.id, c.provider_id, c.content_hash, c.title, c.summary, c.explanation,
       primary_topic.topic_id AS primary_topic_id,
       GROUP_CONCAT(all_topics.topic_id, ',') AS topic_ids,
       s.name AS source_name, s.url AS source_url, s.attribution, s.license, s.license_url, s.retrieved_at,
@@ -251,12 +266,14 @@ export async function getCards(): Promise<Card[]> {
     JOIN card_topics all_topics ON all_topics.card_id = c.id
     LEFT JOIN favorites f ON f.card_id = c.id
     LEFT JOIN review_state r ON r.card_id = c.id
-    WHERE c.body_retained=1
+    WHERE c.body_retained=1 AND c.hidden=0
     GROUP BY c.id
     ORDER BY c.created_at, c.id
   `);
 
+  const avoided = await readAvoidedSubjects(db);
   return rows.map((row) => ({
+    subject: row.subject ?? undefined,
     id: row.id,
     providerId: row.provider_id,
     contentHash: row.content_hash,
@@ -278,7 +295,7 @@ export async function getCards(): Promise<Card[]> {
     savedAt: row.saved_at,
     references: JSON.parse(row.references_json),
     provenance: row.provenance_json ? JSON.parse(row.provenance_json) : null,
-  }));
+  })).filter(card => !avoidsCard(card, avoided));
 }
 
 export async function recordInteraction(cardId: string, eventType: 'seen' | 'expanded'): Promise<void> {
@@ -481,6 +498,10 @@ export async function getPersistentFeed(): Promise<FeedAssignment[]> {
     await db.runAsync(`DELETE FROM feed_queue WHERE rank>(SELECT active_rank FROM sync_state) AND lane!='review'
       AND card_id IN (SELECT id FROM cards WHERE first_read_at IS NOT NULL)`);
     const cards = await getCards(), interests = await getInterests() ?? [];
+    const visible = new Set(cards.map(c => c.id));
+    for (const row of await db.getAllAsync<{ card_id: string }>('SELECT card_id FROM feed_queue')) {
+      if (!visible.has(row.card_id)) await db.runAsync('DELETE FROM feed_queue WHERE card_id=?', row.card_id);
+    }
     const queued = new Set((await db.getAllAsync<{ card_id: string }>('SELECT card_id FROM feed_queue')).map(r => r.card_id));
     const marks = new Map((await db.getAllAsync<{ card_id: string; due_at: string }>('SELECT * FROM review_queue_marks')).map(r => [r.card_id,r.due_at]));
     let remaining = cards.filter(c => !queued.has(c.id) && (!c.isRead || c.nextReviewAt !== marks.get(c.id)));
@@ -494,17 +515,17 @@ export async function getPersistentFeed(): Promise<FeedAssignment[]> {
       }
       const used = new Set(block.map(a => a.cardId)); remaining = remaining.filter(c => !used.has(c.id));
     }
-    const rows = await db.getAllAsync<{ rank: number; card_id: string; lane: FeedLane; requested_lane: FeedLane }>(`SELECT q.* FROM feed_queue q JOIN cards c ON c.id=q.card_id WHERE c.body_retained=1 ORDER BY q.rank`);
+    const rows = await db.getAllAsync<{ rank: number; card_id: string; lane: FeedLane; requested_lane: FeedLane }>(`SELECT q.* FROM feed_queue q JOIN cards c ON c.id=q.card_id WHERE c.body_retained=1 AND c.hidden=0 ORDER BY q.rank`);
     return rows.map(r => ({ rank: r.rank, cardId: r.card_id, lane: r.lane, requestedLane: r.requested_lane }));
   });
 }
 async function localInventory(db: SQLite.SQLiteDatabase): Promise<Inventory> {
   const state = (await db.getFirstAsync<{ device_id: string; inventory_version: number }>('SELECT * FROM sync_state WHERE id=1'))!;
-  const rows = await db.getAllAsync<{ id: string; content_hash: string; first_read_at: string | null; favorite: number; body_retained: number; idea_fingerprint: string | null; primary_topic: string; expanded: number }>(`
+  const rows = await db.getAllAsync<{ id: string; content_hash: string; first_read_at: string | null; favorite: number; body_retained: number; hidden: number; idea_fingerprint: string | null; primary_topic: string; expanded: number }>(`
     SELECT c.*,CASE WHEN f.card_id IS NULL THEN 0 ELSE 1 END favorite,ct.topic_id primary_topic,
       EXISTS(SELECT 1 FROM interaction_events e WHERE e.card_id=c.id AND e.event_type='expanded') expanded
     FROM cards c JOIN card_topics ct ON ct.card_id=c.id AND ct.is_primary=1 LEFT JOIN favorites f ON f.card_id=c.id ORDER BY c.id`);
-  const retainedCards = rows.filter(r => r.body_retained === 1).map(r => ({ id: r.id, contentHash: r.content_hash, read: r.first_read_at !== null, favorite: r.favorite === 1,
+  const retainedCards = rows.filter(r => r.body_retained === 1 && !r.hidden).map(r => ({ id: r.id, contentHash: r.content_hash, read: r.first_read_at !== null, favorite: r.favorite === 1,
     ...(r.idea_fingerprint ? { ideaFingerprint: r.idea_fingerprint } : {}) }));
   const acked = new Set((await db.getAllAsync<{ event_id: string }>('SELECT event_id FROM history_ack')).map(r => r.event_id));
   const historyEvents = rows.map(r => ({ eventId: `${r.id}:${r.first_read_at ? 1 : 0}:${r.expanded}`, id: r.id, contentHash: r.content_hash,
@@ -531,9 +552,10 @@ export async function importBackendDelivery(deliveryId: string, values: unknown[
   return transaction(db, async () => {
     const receipt = await db.getFirstAsync<{ payload: string }>('SELECT payload FROM delivery_receipts WHERE delivery_id=?', deliveryId);
     if (receipt) { await db.runAsync('INSERT OR IGNORE INTO delivery_outbox VALUES (?,?)', deliveryId, receipt.payload); return 0; }
+    const avoided = await readAvoidedSubjects(db);
     const acceptedIds: string[] = [], rejectedIds: string[] = []; let added = 0;
     for (const { value, card: c } of validated) {
-      if (!c) { rejectedIds.push(value.id as string); continue; }
+      if (!c || avoidsCard(c, avoided)) { rejectedIds.push(value.id as string); continue; }
       const prior = await db.getFirstAsync<{ id: string; content_hash: string; body_retained: number }>('SELECT id,content_hash,body_retained FROM cards WHERE id=? OR content_hash=? OR idea_fingerprint=?', c.id, c.contentHash, c.ideaFingerprint);
       if (prior) { (prior.id === c.id && prior.content_hash === c.contentHash && prior.body_retained === 1 ? acceptedIds : rejectedIds).push(c.id); continue; }
       const sourceId = `backend-source-${c.contentHash}`;
@@ -541,8 +563,8 @@ export async function importBackendDelivery(deliveryId: string, values: unknown[
         sourceId, c.providerId, 'Gemini · unverified', c.sources[0]?.url ?? null,
         c.sources.length ? 'Generated by Gemini from linked source material; check important claims independently.'
           : 'Generated by Gemini. No live references; check important claims independently.', 'AI-generated; unverified', null, c.generatedAt);
-      await db.runAsync(`INSERT INTO cards(id,provider_id,source_id,content_hash,title,summary,explanation,created_at,idea_fingerprint,references_json,provenance_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        c.id,c.providerId,sourceId,c.contentHash,c.title,c.summary,c.explanation,c.generatedAt,c.ideaFingerprint,JSON.stringify(c.sources),JSON.stringify({ contentMode: c.contentMode, providerId: c.providerId, modelId: c.modelId, promptVersion: c.promptVersion }));
+      await db.runAsync(`INSERT INTO cards(id,provider_id,source_id,content_hash,title,summary,explanation,created_at,idea_fingerprint,references_json,provenance_json,subject) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        c.id,c.providerId,sourceId,c.contentHash,c.title,c.summary,c.explanation,c.generatedAt,c.ideaFingerprint,JSON.stringify(c.sources),JSON.stringify({ contentMode: c.contentMode, providerId: c.providerId, modelId: c.modelId, promptVersion: c.promptVersion }),c.subject ?? null);
       for (const topicId of c.topicIds) await db.runAsync('INSERT INTO card_topics VALUES (?,?,?)', c.id, topicId, topicId === c.primaryTopicId ? 1 : 0);
       acceptedIds.push(c.id); added++;
     }
@@ -561,4 +583,41 @@ export async function getDeliveryOutbox(): Promise<{ id: string; ack: DeliveryAc
 }
 export async function clearDeliveryOutbox(id: string): Promise<void> {
   const db = await getDatabase(); await transaction(db, async () => { await db.runAsync('DELETE FROM delivery_outbox WHERE delivery_id=?', id); });
+}
+
+async function readAvoidedSubjects(db: SQLite.SQLiteDatabase): Promise<AvoidedSubject[]> {
+  return (await db.getAllAsync<{ subject: string; topic_ids: string }>('SELECT subject,topic_ids FROM avoided_subjects ORDER BY subject'))
+    .map(r => ({ subject: r.subject, topicIds: JSON.parse(r.topic_ids) }));
+}
+export async function getAvoidanceOutbox(): Promise<{ deviceId: string; subjects: AvoidedSubject[] }> {
+  const db = await getDatabase();
+  const state = (await db.getFirstAsync<{ device_id: string }>('SELECT device_id FROM sync_state'))!;
+  const rows = await db.getAllAsync<{ subject: string; topic_ids: string }>('SELECT subject,topic_ids FROM avoided_subjects WHERE synced=0 ORDER BY rowid LIMIT 100');
+  return { deviceId: state.device_id, subjects: rows.map(r => ({ subject: r.subject, topicIds: JSON.parse(r.topic_ids) })) };
+}
+export async function acknowledgeAvoidance(subjects: AvoidedSubject[]): Promise<void> {
+  const db = await getDatabase();
+  await transaction(db, async () => {
+    for (const entry of subjects) await db.runAsync('UPDATE avoided_subjects SET synced=1 WHERE subject=? AND topic_ids=?', entry.subject, JSON.stringify(entry.topicIds));
+  });
+}
+export async function neverShowCard(card: Card): Promise<void> {
+  const db = await getDatabase();
+  const subject = cardSubject(card);
+  if (!subject) throw new Error('This card has no subject to save.');
+  await transaction(db, async () => {
+    const prior = await db.getFirstAsync<{ topic_ids: string }>('SELECT topic_ids FROM avoided_subjects WHERE subject=?', subject);
+    const topicIds = [...new Set([...(prior ? JSON.parse(prior.topic_ids) : []), ...card.topicIds])].sort();
+    await db.runAsync('INSERT INTO avoided_subjects(subject,topic_ids) VALUES (?,?) ON CONFLICT(subject) DO UPDATE SET topic_ids=excluded.topic_ids,synced=0', subject,JSON.stringify(topicIds));
+    const avoided = [{ subject, topicIds }];
+    const candidates = await db.getAllAsync<{ id: string; subject: string | null; title: string; summary: string }>('SELECT id,subject,title,summary FROM cards WHERE body_retained=1 AND hidden=0');
+    for (const candidate of candidates) {
+      if (candidate.id !== card.id && !avoidsCard(candidate, avoided)) continue;
+      await db.runAsync('UPDATE cards SET hidden=1 WHERE id=?', candidate.id);
+      await db.runAsync('DELETE FROM feed_queue WHERE card_id=?', candidate.id);
+      await db.runAsync('DELETE FROM review_state WHERE card_id=?', candidate.id);
+      await db.runAsync('DELETE FROM review_queue_marks WHERE card_id=?', candidate.id);
+    }
+    await db.runAsync('UPDATE sync_state SET inventory_version=inventory_version+1 WHERE id=1');
+  });
 }

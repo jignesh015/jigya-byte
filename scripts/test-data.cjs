@@ -62,7 +62,7 @@ function load(file) {
   assert.equal(db.prepare("SELECT COUNT(*) n FROM sources WHERE provider_id='jigyabyte-sample'").get().n,0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM feed_queue').get().n,0);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM review_queue_marks').get().n,0);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version,7);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,8);
 
 
   assert.equal((await data.getCards()).length,0);
@@ -159,7 +159,41 @@ function load(file) {
   const invalid={...makeBackendCard(1001),summary:'a'.repeat(241)};
   assert.equal(await data.importBackendDelivery('invalid',[invalid]),0);
   assert.deepEqual((await data.getDeliveryOutbox()).find(r=>r.id==='invalid').ack.rejectedIds,[invalid.id]);
-  console.log('PASS: v4-to-v6 card-library reset and migration, persistent queue, delivery outbox and dedup, 40 protected favorites, 30 read-body cap, safe active unfavorite, no resurrection, analytics/reviews and restart recovery.');
+  // Never is durable, hides matching subjects across tags, keeps same-topic
+  // alternatives and analytics, and cannot be undone by a delayed delivery.
+  const neverCards = [
+    {...makeBackendCard(2001), subject:'octopus arms taste with suckers'},
+    {...makeBackendCard(2002), subject:'octopus arms taste with suckers'},
+    {...makeBackendCard(2003), subject:'camel eyes have three eyelids'},
+    makeBackendCard(2004),
+  ];
+  assert.equal(await data.importBackendDelivery('never-seed',neverCards),4);
+  const selected=(await data.getCards()).find(c=>c.id===neverCards[0].id);
+  await data.recordInteraction(selected.id,'seen'); await data.recordInteraction(selected.id,'expanded');
+  await data.setFavorite(selected.id,true); await data.scheduleReview(selected.id,'easy');
+  const metricsBeforeNever=await data.getAnalytics();
+  await data.neverShowCard(selected); await data.neverShowCard(selected);
+  assert.deepEqual((await data.getAnalytics()).totals,metricsBeforeNever.totals);
+  assert.equal((await data.getCards()).some(c=>c.id===selected.id||c.id===neverCards[1].id),false);
+  assert.equal((await data.getCards()).some(c=>c.id===neverCards[2].id),true);
+  assert.equal((await data.getPersistentFeed()).some(c=>c.cardId===selected.id||c.cardId===neverCards[1].id),false);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM review_state WHERE card_id=?').get(selected.id).n,0);
+  assert.equal((await data.getInventory()).retainedCards.some(c=>c.id===selected.id),false);
+  let preference=await data.getAvoidanceOutbox(); assert.equal(preference.subjects.length,1);
+  assert.equal(preference.subjects[0].subject,'octopus arms taste with suckers');
+  assert.equal(JSON.stringify(preference).includes('explanation'),false);
+  db.close(); db=new DatabaseSync(testFile); cache.delete(path.resolve('src/data/database.ts')); data=load(path.resolve('src/data/database.ts')); await data.initializeDatabase();
+  assert.equal((await data.getAvoidanceOutbox()).subjects.length,1);
+  assert.equal(await data.importBackendDelivery('never-late',[{...makeBackendCard(2005),subject:'octopus arms taste with suckers'}]),0);
+  assert.equal(await data.importBackendDelivery('never-repeat',[neverCards[0]]),0);
+  await data.acknowledgeAvoidance(preference.subjects); assert.equal((await data.getAvoidanceOutbox()).subjects.length,0);
+  const legacy=(await data.getCards()).find(c=>c.id===neverCards[3].id);
+  await data.neverShowCard(legacy);
+  preference=await data.getAvoidanceOutbox(); assert.equal(preference.subjects.length,1);
+  assert.ok(preference.subjects[0].subject.includes('offline idea word2004'));
+  assert.ok(preference.subjects[0].subject.length<=280);
+  assert.equal((await data.getCards()).some(c=>c.id===legacy.id),false);
+  console.log('PASS: v4-to-v8 card-library reset and migration, persistent queue, delivery outbox and dedup, 40 protected favorites, 30 read-body cap, safe active unfavorite, no resurrection, analytics/reviews and restart recovery.');
   db.close();
   fs.rmSync(testFile);
   fs.rmdirSync(testFolder);

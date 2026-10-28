@@ -1,15 +1,15 @@
 import type { BackendSettings } from './backendConnection';
 import type { SyncReply } from './backendContracts';
-import { acknowledgeHistory, clearDeliveryOutbox, getDeliveryOutbox, getInventory, importBackendDelivery } from './database';
+import { getAvoidanceOutbox, acknowledgeAvoidance, acknowledgeHistory, clearDeliveryOutbox, getDeliveryOutbox, getInventory, importBackendDelivery } from './database';
 export type BackendStatus = { state: string; message: string; unread: number; provider?: string; model?: string; contentMode?: string;
   connection: 'disabled' | 'checking' | 'connected' | 'offline'; connectionMessage?: string; lastHandshakeAt?: string;
   refreshing?: boolean; dailyRequests?: { used: number; total: number };
   notification?: { id: number; kind: 'success' | 'info' | 'error'; message: string } };
 type BackendServerStatus = { protocolVersion: number; provider: string; model?: string; contentMode: string;
   retryUncertainAllowed?: boolean; migrationReady?: boolean; usage?: { requests: number }; limits?: { requests: number } };
-type Dependencies = { getInventory: typeof getInventory; getDeliveryOutbox: typeof getDeliveryOutbox; acknowledgeHistory: typeof acknowledgeHistory;
+type Dependencies = { getAvoidanceOutbox: typeof getAvoidanceOutbox; acknowledgeAvoidance: typeof acknowledgeAvoidance; getInventory: typeof getInventory; getDeliveryOutbox: typeof getDeliveryOutbox; acknowledgeHistory: typeof acknowledgeHistory;
   clearDeliveryOutbox: typeof clearDeliveryOutbox; importBackendDelivery: typeof importBackendDelivery; fetch: typeof fetch };
-const defaults: Dependencies = { getInventory, getDeliveryOutbox, acknowledgeHistory, clearDeliveryOutbox, importBackendDelivery, fetch };
+const defaults: Dependencies = { getAvoidanceOutbox, acknowledgeAvoidance, getInventory, getDeliveryOutbox, acknowledgeHistory, clearDeliveryOutbox, importBackendDelivery, fetch };
 export class BackendSync {
   private settings: BackendSettings = { enabled: false, serviceUrl: '', pairingToken: '' };
   private inFlight = false; private pending = false; private active = true; private timer: ReturnType<typeof setTimeout> | undefined;
@@ -134,12 +134,12 @@ export class BackendSync {
     }
   }
   request() {
-    if (!this.active || !this.settings.enabled) return;
+    if (!this.active || this.settings.pairingToken.length < 32) return;
     this.pending = true;
     if (!this.inFlight) { if (this.timer) clearTimeout(this.timer); this.timer = setTimeout(() => { void this.run(); }, 250); }
   }
   async run(): Promise<void> {
-    if (this.inFlight || !this.active || !this.settings.enabled) return;
+    if (this.inFlight || !this.active || this.settings.pairingToken.length < 32) return;
     if (this.timer) clearTimeout(this.timer); this.timer = undefined;
     this.inFlight = true; this.pending = false;
     const settings = this.settings, generation = this.generation;
@@ -160,7 +160,19 @@ export class BackendSync {
     let unread = 0;
     let added = 0;
     let retryChecked = false;
+    let uploadingAvoidance = false;
     try {
+      let batch = await this.deps.getAvoidanceOutbox();
+      while (batch.subjects.length && valid()) {
+        uploadingAvoidance = true;
+        const reply = await call('/v1/avoidance/batches', { protocolVersion: 1, ...batch }) as { protocolVersion?: number; acknowledgedSubjects?: string[] };
+        if (!valid()) return;
+        if (reply.protocolVersion !== 1 || !Array.isArray(reply.acknowledgedSubjects) || !batch.subjects.every(s => reply.acknowledgedSubjects!.includes(s.subject))) throw new Error('Subject preferences were not acknowledged.');
+        await this.deps.acknowledgeAvoidance(batch.subjects);
+        batch = await this.deps.getAvoidanceOutbox();
+      }
+      uploadingAvoidance = false;
+      if (!valid() || !settings.enabled) return;
       unread = (await this.deps.getInventory()).counts.unread;
       // Syncing reading history must not create another handshake.
       const status = this.handshakePromise ? await this.handshakePromise : this.lastServerStatus;
@@ -236,11 +248,12 @@ export class BackendSync {
       if (valid()) {
         const message = 'We couldn’t sync your cards right now. Your saved library is safe; please try again later.';
         this.publish({ state: 'offline', unread, message }); this.notify('error', message);
+        if (uploadingAvoidance) this.timer = setTimeout(() => { void this.run(); }, 60000);
       }
     } finally {
       this.inFlight = false;
       if (this.pending && valid()) this.request();
-      else if (this.pending && this.active && this.settings.enabled) this.request();
+      else if (this.pending && this.active && this.settings.pairingToken.length >= 32) this.request();
       else this.finishRefresh();
     }
   }

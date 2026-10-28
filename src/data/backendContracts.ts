@@ -1,6 +1,6 @@
 import { contentHash, topics } from './cardContent';
 export type SourceRef = { id: string; name: string; title: string; url: string; publishedAt: string; retrievedAt: string; dateKind: 'published' | 'observed' };
-export type BackendCard = { id: string; schemaVersion: 1; contentHash: string; ideaFingerprint: string; title: string; summary: string; explanation: string;
+export type BackendCard = { subject?: string; id: string; schemaVersion: 1; contentHash: string; ideaFingerprint: string; title: string; summary: string; explanation: string;
   primaryTopicId: string; topicIds: string[]; contentMode: 'ai-only'; providerId: string; modelId: string; promptVersion: string; generatedAt: string; sources: SourceRef[] };
 export type HistoryEvent = { eventId: string; id: string; contentHash: string; primaryTopicId: string; seen: boolean; expanded: boolean; ideaFingerprint?: string };
 export type Inventory = { protocolVersion: 1; deviceId: string; inventoryVersion: number; snapshotComplete: true;
@@ -26,7 +26,7 @@ function validSource(value: unknown): value is SourceRef {
 export async function validateBackendCard(value: unknown): Promise<BackendCard | null> {
   if (!value || typeof value !== 'object') return null;
   const c = value as BackendCard;
-  if (c.schemaVersion !== 1 || !text(c.id, 160) || !text(c.title, 100) || !text(c.summary, 180) || !text(c.explanation, 700)
+  if ((c.subject !== undefined && (!text(c.subject, 96) || c.subject.trim().split(/\s+/).length > 12)) || c.schemaVersion !== 1 || !text(c.id, 160) || !text(c.title, 100) || !text(c.summary, 180) || !text(c.explanation, 700)
     || !text(c.providerId, 160) || !text(c.modelId, 160) || !text(c.promptVersion, 30) || !Number.isFinite(Date.parse(c.generatedAt))
     || !topics.some(t => t.id === c.primaryTopicId) || !Array.isArray(c.topicIds) || c.topicIds.length > 10 || !c.topicIds.includes(c.primaryTopicId)
     || c.topicIds.some(id => !topics.some(t => t.id === id)) || c.contentMode !== 'ai-only'

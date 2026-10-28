@@ -58,14 +58,16 @@ export async function runWorker(config: Config, store: PostgresStore,
       if (!options.length || !(NEWS_TOPICS.includes(topic) || ['agentic-coding','indie-games'].includes(topic))) return [];
       const source = options[randomInt(options.length)]; assigned.add(source.id); return [source];
     });
+    const avoided = await store.avoidedSubjects(job.device_id);
+    const exclusions = () => avoided.filter(s => s.topicIds.some(t => topics.includes(t))).map(s => s.subject);
     const excluded = cached.slice(-15).map(c => c.title);
-    let text = prompt(topics,excluded,new Date(),evidence);
+    let text = prompt(topics,excluded,new Date(),evidence,exclusions());
     const remaining = selected.tokenLimit - (await store.usage()).tokens;
     const bytes = () => Buffer.byteLength(text+JSON.stringify(outputSchema));
     const fits = () => bytes() <= selected.maxInput && remaining-bytes() >= Math.min(selected.maxOutput,topics.length*350+512);
     while (!fits() && topics.length>1) {
       topics.pop(); evidence=evidence.filter(s=>topics.some(t=>s.topicIds.includes(t)));
-      text=prompt(topics,excluded,new Date(),evidence);
+      text=prompt(topics,excluded,new Date(),evidence,exclusions());
     }
     if (!fits()) throw new Failure(bytes()>selected.maxInput ? 'input_budget_exceeded' : 'budget_exhausted');
     const maxOutput = Math.min(selected.maxOutput,remaining-bytes());
@@ -81,7 +83,7 @@ export async function runWorker(config: Config, store: PostgresStore,
     // Commit generated bodies and job completion together: retries cannot double-insert them.
     await store.owned(job,async () => {
       for (const diagnostic of diagnostics) await store.diagnostic(job,diagnostic);
-      const added=await store.addCards(prepared.cards,config.cacheLimit);
+      const added=await store.addCards(prepared.cards,config.cacheLimit,job.device_id);
       if (!added) throw new Failure('duplicate_generation');
       if (prepared.rejected) {
         const prior=await store.job(job.id);

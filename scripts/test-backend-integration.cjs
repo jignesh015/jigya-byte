@@ -131,6 +131,25 @@ function load(file) {
     sync.configure(settings); await sync.retry();
     assert.equal(store.job(uncertainJob).state,'queued'); // Actual Android Retry dispatches the explicit endpoint.
     assert.equal(store.usage().requests,0);
+    // A lost preference response retains the outbox. Retrying with refill off
+    // still persists it once, without creating a generation job or losing data.
+    sync.dispose();
+    const hidden=(await data.getCards()).find(c=>c.references.length);
+    await data.recordInteraction(hidden.id,'seen'); await data.recordInteraction(hidden.id,'expanded');
+    await data.neverShowCard(hidden);
+    let lostPreference=false;
+    const beforeJobs=store.jobs().length;
+    sync=new BackendSync(status=>latestStatus=status,async()=>{}, {...data,fetch:async(url,init)=>{
+      const reply=await fetch(url,init);
+      if(url.endsWith('/v1/avoidance/batches')&&!lostPreference){lostPreference=true;throw new Error('lost preference acknowledgement');}
+      return reply;
+    }});
+    sync.configure({...settings,enabled:false}); await sync.run();
+    assert.equal((await data.getAvoidanceOutbox()).subjects.length,1);
+    await sync.run(); assert.equal((await data.getAvoidanceOutbox()).subjects.length,0);
+    assert.equal(store.avoidedSubjects(device).length,1);
+    assert.equal(store.jobs().length,beforeJobs); assert.equal(store.usage().requests,0);
+    assert.equal((await data.getCards()).some(c=>c.id===hidden.id),false);
     console.log('PASS: Android repositories -> real fixture HTTP backend, 10-to-60 refill, concurrent reading, durable lost-ack retry, stable queue append, read-triggered refill, secure pairing, and offline preservation. Zero live model calls.');
   } finally {sync?.dispose();await backend.close();appDb.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,6 +1,6 @@
 import { providerRoutes,generationBatchSize } from '../../../backend/src/config.ts';
 import type { Config } from '../../../backend/src/config.ts';
-import { Failure,snapshot,object,array,string,history } from '../../../backend/src/contracts/index.ts';
+import { Failure,avoidanceBatch,snapshot,object,array,string,history } from '../../../backend/src/contracts/index.ts';
 import type { PostgresStore } from './store.ts';
 import { authorize,json,failure,requestBody } from './runtime.ts';
 
@@ -29,6 +29,11 @@ export async function handleApi(request:Request,config:Config,store:PostgresStor
         inventory:{minimum:config.unreadMin,refillAt:config.refillAt,target:config.target,readNonFavoriteLimit:config.readLimit},jobs});
     }
     if(!await store.ready()) throw new Failure('migration_not_ready',503);
+    if(request.method==='POST' && path==='/v1/avoidance/batches') {
+      const batch=avoidanceBatch(await requestBody(request));
+      await store.addAvoidedSubjects(batch.deviceId,batch.subjects);
+      return json({protocolVersion:1,acknowledgedSubjects:batch.subjects.map(s=>s.subject)});
+    }
     if(request.method==='POST' && path==='/v1/sync') return json(await store.sync(snapshot(await requestBody(request)),config));
     const ack=path.match(/^\/v1\/deliveries\/([a-zA-Z0-9-]+)\/ack$/);
     if(request.method==='POST' && ack) {

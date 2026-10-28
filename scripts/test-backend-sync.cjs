@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 const inventory = { deviceId: 'fixture', counts: { unread: 60 }, historyEvents: [] };
-const repository = { getInventory: async () => inventory, getDeliveryOutbox: async () => [],
+const repository = { getAvoidanceOutbox: async () => ({ deviceId: 'fixture', subjects: [] }), acknowledgeAvoidance: async () => {}, getInventory: async () => inventory, getDeliveryOutbox: async () => [],
   acknowledgeHistory: async () => {}, clearDeliveryOutbox: async () => {}, importBackendDelivery: async () => {} };
 const intervals = new Map(); let nextTimer = 0;
 const exported = {};

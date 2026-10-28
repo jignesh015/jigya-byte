@@ -18,9 +18,58 @@ const inventory=(unread=0,version=1)=>snapshot({protocolVersion:1,deviceId:'clou
 const raw=(n=10)=>({cards:Array.from({length:n},(_,i)=>({title:`Fixture unique${i}`,summary:`Sample unique${i}`,explanation:`Mock unique${i}`,primaryTopicId:'space',topicIds:['space']}))});
 const setup=async()=>{
   const s=new PostgresStore(url,true);
-  await s.db.prepare('TRUNCATE jigyabyte.cards,jigyabyte.devices,jigyabyte.history,jigyabyte.deliveries,jigyabyte.jobs,jigyabyte.usage,jigyabyte.source_cache,jigyabyte.topic_generation,jigyabyte.source_usage,jigyabyte.model_cooldowns RESTART IDENTITY').run();
+  await s.db.prepare('TRUNCATE jigyabyte.cards,jigyabyte.devices,jigyabyte.history,jigyabyte.deliveries,jigyabyte.jobs,jigyabyte.usage,jigyabyte.source_cache,jigyabyte.topic_generation,jigyabyte.source_usage,jigyabyte.model_cooldowns,jigyabyte.avoided_subjects RESTART IDENTITY').run();
   await s.db.prepare("UPDATE settings SET value='true' WHERE key='migration_ready'").run();return s;
 };
+
+Deno.test('cloud Never API persists compact exclusions idempotently without generation, and filters cached ideas across tags',async()=>{
+  const s=await setup();
+  const subject='octopus arms taste with suckers';
+  try {
+    const payload={protocolVersion:1,deviceId:'cloud-test',subjects:[{subject,topicIds:['biology','science']}]};
+    const request=(token:string)=>new Request('https://example.org/functions/v1/jigyabyte-api/v1/avoidance/batches',{
+      method:'POST',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify(payload)});
+    assert.equal((await handleApi(request('bad'),config,s)).status,401);
+    for(let i=0;i<2;i++){
+      const response=await handleApi(request(config.token),config,s);assert.equal(response.status,200);
+      assert.deepEqual((await response.json()).acknowledgedSubjects,[subject]);
+    }
+    assert.equal((await s.avoidedSubjects('cloud-test')).length,1);
+    assert.equal((await s.jobs()).length,0);assert.equal((await s.usage()).requests,0);
+    const values={cards:[
+      {subject,title:'An unexpected tasting tool',summary:'An arm can taste a meal.',explanation:'Fixture.',primaryTopicId:'biology',topicIds:['biology']},
+      {subject:'camel eyes have three eyelids',title:'Extra protection in the desert',summary:'A camel has three eyelids.',explanation:'Fixture.',primaryTopicId:'biology',topicIds:['biology']},
+    ]};
+    const cards=prepare(values,config,2);await s.addCards(cards,5000);
+    assert.deepEqual((await s.candidates(inventory())).map(c=>c.id),[cards[1].id]);
+    assert.equal((await s.candidates({...inventory(),deviceId:'another-phone'})).length,2);
+    const other=new PostgresStore(url,true);
+    try {assert.equal((await other.avoidedSubjects('cloud-test')).length,1);} finally {await other.close();}
+    assert.equal(await s.addCards(prepare({cards:[{...values.cards[0],title:'A different headline',summary:'Taste receptors line the suckers.'}]},config,1),5000,'cloud-test'),0);
+    const permissions=await s.db.prepare("SELECT has_table_privilege('anon','jigyabyte.avoided_subjects','SELECT') AS exposed").get();
+    assert.equal(permissions.exposed,false);
+  } finally {await s.close();}
+});
+
+Deno.test('cloud worker sees subject exclusions and fences preferences arriving during the model call',async()=>{
+  const s=await setup(),single={...config,batch:1};
+  try {
+    await s.sync(inventory(),single);
+    const subject='octopus arms taste with suckers';
+    const topics=['game-design','science','history','geography','space','economics','psychology','technology','philosophy','biology',
+      'literature','tech-tips','game-industry-stories','ai-updates','agentic-coding','game-industry-news','indie-games','current-affairs','general-knowledge','cinema',
+      'ancient-history','indian-history','ancient-india','indian-myths-and-epics','art','product-design','ux'];
+    await s.addAvoidedSubjects('cloud-test',[{subject:'specific prior excluded idea',topicIds:topics}]);
+    let calls=0;
+    const result=await runWorker(single,s,()=>async text=>{
+      calls++;assert.ok(text.includes('specific prior excluded idea'));
+      await s.addAvoidedSubjects('cloud-test',[{subject,topicIds:['biology']}]);
+      return {cards:[{subject,title:'A different title',summary:'An arm tastes food.',explanation:'Fixture.',primaryTopicId:'biology',topicIds:['biology']}]};
+    });
+    assert.equal(calls,1);assert.equal((await s.cards()).length,0);assert.equal((await s.usage()).requests,1);
+    assert.equal(result.state,'degraded');
+  } finally {await s.close();}
+});
 
 Deno.test('cloud delivery survives lost responses, validates ACK and rolls back stale/conflicting inventory',async()=>{
   const s=await setup();

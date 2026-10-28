@@ -26,7 +26,7 @@ test('new topics accept interests, history and prepared cards while rejecting un
   s.historyEvents = cards.map(c => ({ eventId: `seen:${c.id}`, id: c.id, contentHash: c.contentHash,
     primaryTopicId: c.primaryTopicId, seen: true, expanded: false }));
   assert.equal(snapshot(s).historyEvents.length, additions.length);
-  assert.ok(cards.every(c => c.promptVersion === '6'));
+  assert.ok(cards.every(c => c.promptVersion === '7'));
   assert.throws(() => snapshot({ ...s, interestTopicIds: ['unknown-topic'] }), /invalid_topic/);
   assert.throws(() => prepare({ cards: [rawCard('unknown-topic')] }, config(), 1), /invalid_topic/);
 });

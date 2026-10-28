@@ -1,5 +1,13 @@
 # Deployment evidence
 
+## Subject-level Never, 2026-10-29
+
+- Applied `20261029000100_avoided_subjects.sql` and deployed `jigyabyte-api` and `jigyabyte-worker` through the authenticated CLI. The new table is private with RLS and revoked public/anon/authenticated access. Existing cache, inventory, delivery, history and usage tables were not rewritten.
+- New cards include a specific subject label; Never stores only its normalized text and topic tags per device. Legacy cards use title + summary (maximum 280 characters), without explanations. Offline preferences are uploaded in acknowledged batches of at most 100, including with auto-refill off. No generation call is made for a Never preference.
+- Worker prompts include relevant deduplicated labels; cache delivery and generated commits apply a shared lexical subject filter across tags. Relevant exclusions are never truncated or expired to fit a request; existing input/output/daily caps remain. Semantic paraphrase avoidance also relies on the model following its instructions.
+- App/backend typechecks, app feed/data/lifecycle/HTTP integration regressions, 48 backend tests, 8 disposable Postgres/cloud tests and publication audit passed. The hosted `--avoidance` smoke probe verified authentication, idempotent preference ACK, cached exclusion and unchanged zero daily request usage. Removed only its synthetic test-device rows afterward. No live generation probe was run.
+- ARM64 APK `artifacts/JigyaByte.apk`, SHA256 `a6e0a783f0acbf30e72642b681a14dc3c99b7f813a468ce37b6842328f38a76c`, built and installed in place on Samsung `R5CT2370GBT`. Existing cards were visible after launch. The expanded reader displays Again, Got it, Easy and Never on one row; screenshot: `artifacts/never-reader-phone.png`. No real personal card was marked Never as part of testing. Actual on-device Never interaction/offline recovery and live semantic-paraphrase avoidance remain manual acceptance items; repository/HTTP fixtures cover the action and retry path.
+
 ## Rolling card cache update, 2026-10-18
 
 - Set hosted `MAX_CACHE_CARDS=5000` with Supabase CLI and deployed both `jigyabyte-api` and `jigyabyte-worker` successfully.

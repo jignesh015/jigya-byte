@@ -27,6 +27,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
   getAnalytics,
   getCards,
+  getHiddenCardIds,
   getInterests,
   getRecentlyShownCardIds,
   initializeDatabase,
@@ -34,6 +35,7 @@ import {
   recordInteraction,
   saveInterests,
   scheduleReview,
+  neverShowCard,
   setFavorite,
   type AnalyticsMetric,
   type AnalyticsSnapshot,
@@ -246,6 +248,7 @@ function FeedScreen({
   const reportedSeen = useRef(new Set<string>());
   const scrollRef = useRef<ScrollView | null>(null);
   const currentIndex = useRef(0);
+  const previousAssignments = useRef(assignments);
   const gestureStart = useRef({ x: 0, y: 0, startedAt: 0 });
   const gestureAxis = useRef<'horizontal' | 'vertical' | null>(null);
   const gesturePage = useRef(0);
@@ -275,6 +278,19 @@ function FeedScreen({
     reportedSeen.current.add(assignment.cardId);
     void onSeen(assignment.cardId, assignment.lane).catch(() => reportedSeen.current.delete(assignment.cardId));
   }, [active, assignments, cardsById, onSeen]);
+
+  useEffect(() => {
+    const prior = previousAssignments.current[currentIndex.current];
+    previousAssignments.current = assignments;
+    if (!prior) return;
+    let next = assignments.findIndex(item => item.cardId === prior.cardId && item.rank === prior.rank);
+    if (next < 0) next = assignments.findIndex(item => (item.rank ?? Infinity) > (prior.rank ?? -1));
+    if (next < 0) next = Math.min(currentIndex.current, assignments.length);
+    if (next === currentIndex.current) return;
+    currentIndex.current = next;
+    scrollMetrics.current.offset = next * scrollMetrics.current.viewportHeight;
+    scrollRef.current?.scrollTo({ y: scrollMetrics.current.offset, animated: false });
+  }, [assignments]);
 
   useEffect(() => { if (active && pageHeight > 0) reportSeen(currentIndex.current); }, [active, pageHeight, reportSeen]);
 
@@ -492,7 +508,7 @@ function DetailScreen({
   card: Card | undefined;
   onBack: () => void;
   onFavorite: (card: Card) => void;
-  onReview: (cardId: string, action: 'again' | 'got_it' | 'easy') => void;
+  onReview: (cardId: string, action: 'again' | 'got_it' | 'easy' | 'never') => void;
   reviewBusy: boolean;
   backLabel: string;
 }) {
@@ -546,11 +562,12 @@ function DetailScreen({
 
       <View style={styles.reviewPanel}>
         <Text style={styles.reviewTitle}>Review this idea</Text>
-        <Text style={styles.reviewHint}>Choose when you would like it to come back.</Text>
+        <Text style={styles.reviewHint}>Choose when it returns. Never hides this subject, not its topic.</Text>
         <View style={styles.detailReviewActions}>
           <ActionButton disabled={reviewBusy} label="Again" onPress={() => onReview(card.id, 'again')} />
           <ActionButton disabled={reviewBusy} label="Got it" onPress={() => onReview(card.id, 'got_it')} />
           <ActionButton disabled={reviewBusy} label="Easy" onPress={() => onReview(card.id, 'easy')} />
+          <ActionButton disabled={reviewBusy} label="Never" onPress={() => onReview(card.id, 'never')} />
         </View>
         {card.nextReviewAt ? (
           <Text style={styles.reviewScheduled}>Next review {new Date(card.nextReviewAt).toLocaleString()}</Text>
@@ -941,13 +958,13 @@ export default function App() {
   const refreshLocalData = useCallback(async () => {
     protectCardBodies([activeFeedId.current, readerId.current]);
     await cleanupReadBodies();
-    const [nextCards, nextAnalytics] = await Promise.all([getCards(), getAnalytics()]);
+    const [nextCards, nextAnalytics, hiddenIds] = await Promise.all([getCards(), getAnalytics(), getHiddenCardIds()]);
     setCards(nextCards);
     setAnalytics(nextAnalytics);
     const nextAssignments = await getPersistentFeed();
     setAssignments(current => {
       const firstRank = nextAssignments[0]?.rank ?? Infinity;
-      return [...current.filter(item => (item.rank ?? Infinity) < firstRank), ...nextAssignments];
+      return [...current.filter(item => (item.rank ?? Infinity) < firstRank && !hiddenIds.has(item.cardId)), ...nextAssignments];
     });
     const inventory = await getInventory();
     setBackendStatus(current => ({ ...current, unread: inventory.counts.unread }));
@@ -1067,11 +1084,20 @@ export default function App() {
     })();
   }, [tab, refreshLocalData]);
 
-  const handleReview = useCallback((cardId: string, action: 'again' | 'got_it' | 'easy') => {
+  const handleReview = useCallback((cardId: string, action: 'again' | 'got_it' | 'easy' | 'never') => {
     setReviewBusy(true);
     void (async () => {
       try {
-        await scheduleReview(cardId, action);
+        if (action === 'never') {
+          const card = cards.find(item => item.id === cardId);
+          if (!card) throw new Error('Could not find this card.');
+          await neverShowCard(card);
+          readerId.current = null;
+          if (activeFeedId.current === cardId) activeFeedId.current = null;
+          setTab(readerOrigin.current);
+          setView('main');
+          setDiscoveryNotice({ kind: 'success', message: 'Subject hidden. Your preference will sync when the backend is connected.' });
+        } else await scheduleReview(cardId, action);
         await refreshAfterAction();
         setError(null);
       } catch (cause) {
@@ -1080,7 +1106,7 @@ export default function App() {
         setReviewBusy(false);
       }
     })();
-  }, [refreshAfterAction]);
+  }, [refreshAfterAction, cards]);
 
   const openInterests = useCallback(() => {
     setInterestDraft(interests);
@@ -1338,7 +1364,7 @@ const styles = StyleSheet.create({
   reviewPanel: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 19, paddingBottom: 8 },
   reviewTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
   reviewHint: { color: colors.muted, fontSize: 12, marginTop: 5 },
-  detailReviewActions: { flexDirection: 'row', gap: 8, marginTop: 14 },
+  detailReviewActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   actionButton: { minHeight: 48, borderRadius: 999, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 15, paddingVertical: 10, backgroundColor: colors.surfaceRaised, alignItems: 'center', justifyContent: 'center' },
   actionButtonCompact: { paddingHorizontal: 12, paddingVertical: 8 },
   actionButtonSelected: { borderColor: colors.accent, backgroundColor: colors.accent },

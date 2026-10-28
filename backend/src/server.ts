@@ -4,7 +4,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { readConfig, providerRoutes, generationBatchSize } from './config.ts';
 import type { Config } from './config.ts';
-import { array, Failure, history, object, snapshot, string } from './contracts/index.ts';
+import { array, Failure, avoidanceBatch, history, object, snapshot, string } from './contracts/index.ts';
 import { Store } from './storage/store.ts';
 import { Worker } from './jobs/worker.ts';
 import { cloudGenerator } from './providers/cloud.ts';
@@ -23,7 +23,7 @@ function routeName(path: string): string {
   if (/^\/v1\/deliveries\/[^/]+\/ack$/.test(path)) return '/v1/deliveries/:id/ack';
   if (/^\/v1\/jobs\/[^/]+\/retry$/.test(path)) return '/v1/jobs/:id/retry';
   if (/^\/v1\/jobs\/[^/]+$/.test(path)) return '/v1/jobs/:id';
-  if (['/health', '/v1/status', '/v1/connection', '/v1/sync', '/v1/history/batches'].includes(path)) return path;
+  if (['/health', '/v1/status', '/v1/connection', '/v1/sync', '/v1/history/batches', '/v1/avoidance/batches'].includes(path)) return path;
   return '/unmatched';
 }
 function record(value: unknown): Record<string, unknown> {
@@ -116,6 +116,11 @@ export function createBackend(config: Config, store = new Store(config.database)
       if (request.method === 'GET' && url.pathname === '/health') { send(200, { service: 'JigyaByte', protocolVersion: 1, ready: true }); return; }
       const auth = Buffer.from(request.headers.authorization ?? ''), expected = Buffer.from(`Bearer ${config.token}`);
       if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) throw new Failure('unauthorized', 401);
+      if (request.method === 'POST' && url.pathname === '/v1/avoidance/batches') {
+        const batch = avoidanceBatch(await readBody());
+        store.addAvoidedSubjects(batch.deviceId, batch.subjects);
+        send(200, { protocolVersion: 1, acknowledgedSubjects: batch.subjects.map(s => s.subject) }); return;
+      }
       if (request.method === 'GET' && url.pathname === '/v1/connection') {
         send(200, { protocolVersion: 1, provider: config.provider, model: config.model, contentMode: config.mode,
           usage: store.usage(), usageDay: new Date().toISOString().slice(0, 10), limits: { requests: config.requestLimit },

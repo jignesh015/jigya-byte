@@ -1,5 +1,7 @@
 # JigyaByte Supabase migration
 
+Subject exclusions (2026-10-29): apply `migrations/20261029000100_avoided_subjects.sql` before deploying the current functions. This is an additive private table; no content, deliveries or budgets are cleared. The authenticated API accepts `{ protocolVersion: 1, deviceId, subjects: [{ subject, topicIds }] }` at `/v1/avoidance/batches` (maximum 100 per upload) and acknowledges subject strings. Writes are transactional and idempotent; repeated entries merge topic tags. Phone preferences upload even when automatic refill is off. Worker prompts use only relevant short subject labels, with lexical filtering of cache selection and generated commits. No model call is made to process Never.
+
 2026-10-14 update: apply `migrations/20261014000100_model_cooldowns.sql` before deploying the updated functions. It adds a private persistent model cooldown table without rewriting content or usage. The compact `/v1/connection` route supports the app's five-minute handshake and daily usage pill; sync responses include friendly request feedback. `schedule-worker.sql` now dispatches only when a queued job is due or a running lease has expired, so idle minutes do not invoke an Edge Function. Reviewed activation for the updated refill flow supersedes the initial-deployment pending-job guard. See the deployment evidence for actual rollout status.
 
 Project: `fuomvvzgdhleikztdpgz`.
